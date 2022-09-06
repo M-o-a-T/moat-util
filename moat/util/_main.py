@@ -12,7 +12,7 @@ from typing import Awaitable
 
 import asyncclick as click
 
-from ._dict import attrdict, combine_dict
+from ._dict import attrdict, combine_dict, to_attrdict
 from ._impl import NotGiven
 from ._msgpack import Proxy
 from ._path import P, path_eval
@@ -264,6 +264,8 @@ def list_ext(name, func=None):
         yield from iter(_ext_cache[name].items())
         return
     for x, f in _ext_cache[name].items():
+        if os.path.exists(os.path.join(f, "._no_load")):
+            continue
         fn = os.path.join(f, func) + ".py"
         if not os.path.exists(fn):
             fn = os.path.join(f, func, "__init__.py")
@@ -350,14 +352,20 @@ class Loader(click.Group):
         subdir = getattr(self, "_util_subdir", None) or ctx.obj._sub_name
 
         if subdir:
-            path = Path(importlib.import_module(subdir).__path__[0])
-            for filename in os.listdir(path):
-                if filename[0] in "._":
-                    continue
-                if filename.endswith(".py"):
-                    rv.append(filename[:-3])
-                elif (path / filename / "__init__.py").is_file():
-                    rv.append(filename)
+            try:
+                paths = importlib.import_module(subdir).__path__
+            except ModuleNotFoundError:
+                pass
+            else:
+                for path in paths:
+                    path = Path(path)
+                    for fn in path.iterdir():
+                        if fn.name[0] in "._":
+                            continue
+                        if fn.suffix == ".py":
+                            rv.append(fn.name[:-3])
+                        elif (fn / "__init__.py").is_file():
+                            rv.append(fn.name)
 
         if self._util_plugin:
             for n, _ in list_ext(ctx.obj._ext_name, self._util_plugin):
@@ -390,13 +398,11 @@ class MainLoader(Loader):
     """
 
     async def invoke(self, ctx):
-        if ctx.obj is None:
+        if not getattr(ctx, "_moat_invoked", False):
             await ctx.invoke(self.callback, **ctx.params)
         return await super().invoke(ctx)
 
 
-#
-# The following part is annoying.
 #
 # There are two ways this can start up.
 # (a) `main_` is the "real" main function. It sets up the Click environment and then
@@ -407,9 +413,8 @@ class MainLoader(Loader):
 #     and then returns "main_.main()", which is an awaitable, thus
 #     `wrap_main` acts as an async function.
 
-
 @load_subgroup(
-    plugin="main",
+    plugin="_main",
     cls=MainLoader,
     add_help_option=False,
     invoke_without_command=True,
@@ -441,8 +446,9 @@ async def main_(ctx, verbose, quiet, help=False, **kv):  # pylint: disable=redef
 
     # The above `MainLoader.invoke` call causes this code to be called
     # twice instead of never.
-    if ctx.obj is not None:
+    if hasattr(ctx, '_moat_invoked'):
         return
+    ctx._moat_invoked = True
     wrap_main(ctx=ctx, verbose=max(0, 1 + verbose - quiet), **kv)
     if help or ctx.invoked_subcommand is None and not ctx.protected_args:
         print(ctx.get_help())
@@ -467,35 +473,42 @@ def wrap_main(  # pylint: disable=redefined-builtin
     help=None,
 ) -> Awaitable:
     """
-    The main command entry point, as declared in ``setup.py``.
+    The main command entry point.
 
-    main: special main function, defaults to .util.main_
+    main: special main function, defaults to moat.util.main_
     name: command name, defaults to {main}'s toplevel module name.
-    ext: extension stub package, default to "{name}_ext"
+    ext: extensions' namespace package, default to "{name}.ext"
     sub: load *.cli() from this package, default=caller if True
     conf: a list of additional config changes
     cfg: configuration file, default: various locations based on {name}, False=don't load
     CFG: default configuration (dir or file), relative to caller
-         Default: try to load from name.default
+         Default: try to load from name._config
     wrap: this is a subcommand. Don't set up logging, return the awaitable.
     args: Argument list if called from a test, `None` otherwise.
     help: Main help text of your code.
     """
 
+    obj = getattr(ctx, "obj", None)
+    if obj is None:
+        obj = attrdict()
+
     if name is None:
         name = (main or main_).__module__.split(".", 1)[0]
+
+    opts = obj.get(name, attrdict())
+
     if ext is None:
-        ext = f"{name}_ext"
+        ext = opts.get("ext", f"{name}.ext")
     if sub is True:
         import inspect
 
         sub = inspect.currentframe().f_back.f_globals["__package__"]
     elif sub is None:
-        sub = __name__.split(".", 1)[0] + ".command"
+        if "sub" in opts:
+            sub = opts["sub"]
+        else:
+            sub = __name__.split(".", 1)[0] + "._main"
 
-    obj = getattr(ctx, "obj", None)
-    if obj is None:
-        obj = attrdict()
     if main is None:
         if help is not None:
             raise RuntimeError("You can't set the help text this way")
@@ -514,14 +527,14 @@ def wrap_main(  # pylint: disable=redefined-builtin
             CFG = yload(cfgf)
     elif CFG is None:
         try:
-            CFG = importlib.import_module(f"{name}.default").CFG
+            CFG = importlib.import_module(f"{name}._config").CFG
         except (ImportError, AttributeError):
             CFG = {}
-    CFG = attrdict(**CFG)  # shallow copy
+    CFG = to_attrdict(CFG)  # attrdict-ized copy
 
     for n, _ in list_ext(ext):
         try:
-            CFG[n] = combine_dict(load_ext(ext, n, "config", "CFG"), CFG.get(n, {}), cls=attrdict)
+            CFG[n] = combine_dict(load_ext(ext, n, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
         except ModuleNotFoundError:
             pass
 
