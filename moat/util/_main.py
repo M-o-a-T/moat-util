@@ -226,7 +226,10 @@ def load_one(path, name, endpoint=None):
 def _namespaces(name):
     import pkgutil
 
-    ext = importlib.import_module(name)
+    try:
+        ext = importlib.import_module(name)
+    except ModuleNotFoundError:
+        return ()
     return pkgutil.iter_modules(ext.__path__, ext.__name__ + ".")
 
 
@@ -244,7 +247,7 @@ def _cache_ext(ext_name):
         if not ispkg:
             continue
         x = name.rsplit(".", 1)[-1]
-        f = os.path.join(finder.path, x)
+        f = Path(finder.path) / x
         _ext_cache[ext_name][x] = f
 
 
@@ -264,12 +267,13 @@ def list_ext(name, func=None):
         yield from iter(_ext_cache[name].items())
         return
     for x, f in _ext_cache[name].items():
-        if os.path.exists(os.path.join(f, "._no_load")):
+        if (f / ".no_load").is_file():
             continue
-        fn = os.path.join(f, func) + ".py"
-        if not os.path.exists(fn):
-            fn = os.path.join(f, func, "__init__.py")
-            if not os.path.exists(fn):
+        fn = f / (func + ".py")
+        if not fn.is_file():
+            fn = f / func / "__init__.py"
+            if not fn.is_file():
+                # XXX this might be a namespace
                 continue
         yield (x, f)
 
@@ -304,7 +308,7 @@ def load_ext(ext_name, name, func=None, endpoint=None):
 
 def load_subgroup(_fn=None, plugin=None, **kw):
     """
-    as click.group, but enables loading of subcommands
+    A decorator like click.group, but enables loading of subcommands
     """
 
     def _ext(fn, **kw):
@@ -380,8 +384,8 @@ class Loader(click.Group):
                 plugins = ctx.obj._ext_name
 
                 command = load_one(f"{plugins}.{name}", self._util_plugin, "cli")
-            except (ModuleNotFoundError, FileNotFoundError):
-                pass
+            except (ModuleNotFoundError, FileNotFoundError) as exc:
+                logger.debug("Module Load", exc_info=exc)
 
         if command is None:
             subdir = getattr(self, "_util_subdir", None) or ctx.obj._sub_name
@@ -530,25 +534,24 @@ def wrap_main(  # pylint: disable=redefined-builtin
             CFG = importlib.import_module(f"{name}._config").CFG
         except (ImportError, AttributeError):
             CFG = {}
-    CFG = to_attrdict(CFG)  # attrdict-ized copy
 
-    for n, _ in list_ext(ext):
+    for n, d in list_ext(ext):
         try:
-            CFG[n] = combine_dict(load_ext(ext, n, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
+            CFG[n] = combine_dict(load_ext(ext, d, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
         except ModuleNotFoundError:
-            pass
+            fn = d / "_config.yaml"
+            if fn.is_file():
+                CFG[n] = yload(fn)
 
     obj.stdout = CFG.get("_stdout", sys.stdout)  # used for testing
-    obj.CFG = CFG
+    obj.CFG = to_attrdict(CFG)
 
-    cfg = read_cfg(name, cfg)
-
+    cfg = to_attrdict(read_cfg(name, cfg))
     if cfg:
-        logger.debug("Loading %s", cfg)
-
-        obj.cfg = combine_dict(cfg, CFG, cls=attrdict)
+        cfg = combine_dict(cfg, CFG, cls=attrdict)
     else:
-        obj.cfg = CFG
+        cfg = CFG
+    obj.cfg = cfg = to_attrdict(cfg)
 
     obj.debug = verbose
     obj.DEBUG = debug
@@ -594,6 +597,7 @@ def wrap_main(  # pylint: disable=redefined-builtin
             lcfg["loggers"].setdefault(k, {})["level"] = v
         dictConfig(lcfg)
         logging.captureWarnings(verbose > 0)
+        logger.disabled = False
 
     obj.logger = logging.getLogger(name)
 
