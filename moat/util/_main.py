@@ -385,7 +385,8 @@ class Loader(click.Group):
 
                 command = load_one(f"{plugins}.{name}", self._util_plugin, "cli")
             except (ModuleNotFoundError, FileNotFoundError) as exc:
-                logger.debug("Module Load", exc_info=exc)
+                if exc.name != f"{plugins}.{name}":
+                    raise
 
         if command is None:
             subdir = getattr(self, "_util_subdir", None) or ctx.obj._sub_name
@@ -496,11 +497,10 @@ def wrap_main(  # pylint: disable=redefined-builtin
     if obj is None:
         obj = attrdict()
 
+    opts = obj.get("moat", attrdict())
+
     if name is None:
-        name = (main or main_).__module__.split(".", 1)[0]
-
-    opts = obj.get(name, attrdict())
-
+        name = opts["name"]
     if ext is None:
         ext = opts.get("ext", f"{name}.ext")
     if sub is True:
@@ -508,10 +508,8 @@ def wrap_main(  # pylint: disable=redefined-builtin
 
         sub = inspect.currentframe().f_back.f_globals["__package__"]
     elif sub is None:
-        if "sub" in opts:
-            sub = opts["sub"]
-        else:
-            sub = __name__.split(".", 1)[0] + "._main"
+        sub = opts.get("sub", name)
+        # __name__.split(".", 1)[0] + "._main"
 
     if main is None:
         if help is not None:
@@ -537,7 +535,7 @@ def wrap_main(  # pylint: disable=redefined-builtin
 
     for n, d in list_ext(ext):
         try:
-            CFG[n] = combine_dict(load_ext(ext, d, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
+            CFG[n] = combine_dict(load_ext(ext, n, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
         except ModuleNotFoundError:
             fn = d / "_config.yaml"
             if fn.is_file():
