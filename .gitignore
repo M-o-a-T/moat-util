@@ -2,3 +2,4 @@ __pycache__/
 /.pybuild/
 /dist/
 /*.egg-info/
+/build/
