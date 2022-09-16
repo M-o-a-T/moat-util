@@ -6,8 +6,8 @@ import sys
 import ruyaml as yaml
 
 from ._dict import attrdict
-from ._path import Path
 from ._msgpack import Proxy
+from ._path import Path
 
 __all__ = ["yload", "yprint", "yformat", "yaml_named"]
 
@@ -21,9 +21,13 @@ SafeConstructor.yaml_base_dict_type = attrdict
 
 
 def str_presenter(dumper, data):
-    if "\n" in data:  # check for multiline string
+    """
+    Always show multi-line strings with |-style quoting
+    """
+    if "\n" in data:  # multiline string?
         return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+    else:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
 def yaml_named(name: str, use_repr: bool = False):
@@ -49,6 +53,7 @@ def _path_repr(dumper, data):
     # return ScalarNode(tag, value, style=style)
     # return yaml.events.ScalarEvent(anchor=None, tag='!P', implicit=(True, True), value=str(data))
 
+
 def _proxy_repr(dumper, data):
     return dumper.represent_scalar("!R", data.name)
     # return ScalarNode(tag, value, style=style)
@@ -59,6 +64,7 @@ SafeRepresenter.add_representer(Path, _path_repr)
 SafeConstructor.add_constructor("!P", Path._make)
 
 SafeRepresenter.add_representer(Proxy, _proxy_repr)
+
 
 def _bin_from_ascii(loader, node):
     value = loader.construct_scalar(node)
@@ -92,11 +98,16 @@ _expect_node = Emitter.expect_node
 
 
 def expect_node(self, *a, **kw):
+    """
+    YAML stream mangler.
+
+    TODO rationale?
+    """
     _expect_node(self, *a, **kw)
     self.root_context = False
 
 
-Emitter.expect_node = _expect_node
+Emitter.expect_node = expect_node
 
 
 def yload(stream, multi=False, attr=False):
@@ -106,7 +117,7 @@ def yload(stream, multi=False, attr=False):
     y = yaml.YAML(typ="safe")
     if attr:
 
-        class AttrConstructor(SafeConstructor):
+        class AttrConstructor(SafeConstructor):  # pylint: disable=missing-class-docstring
             def __init__(self, *a, **k):
                 super().__init__(*a, **k)
                 self.yaml_base_dict_type = attrdict
@@ -146,7 +157,7 @@ def yformat(data, compact=None):
     :param stream: the file to write to, defaults to stdout.
     :param compact: Write single lines if possible, default False.
     """
-    from io import StringIO
+    from io import StringIO  # pylint: disable=import-outside-toplevel
 
     s = StringIO()
     yprint(data, compact=compact, stream=s)

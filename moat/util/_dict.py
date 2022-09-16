@@ -1,8 +1,8 @@
 """
 This module contains various helper functions and classes.
 """
-from collections.abc import Mapping
 from copy import deepcopy
+from typing import Mapping, Tuple, Union
 
 from . import NotGiven
 
@@ -28,7 +28,7 @@ def combine_dict(*d, cls=dict, deep=False) -> dict:
     """
     res = cls()
     keys = {}
-    if not len(d):
+    if not d:
         return res
 
     if len(d) == 1 and deep and not isinstance(d[0], Mapping):
@@ -63,11 +63,16 @@ def combine_dict(*d, cls=dict, deep=False) -> dict:
     return res
 
 
-def drop_dict(data: dict, drop: tuple) -> dict:
+def drop_dict(data: Mapping, drop: Tuple[Union[str, Tuple[str]]]) -> Mapping:
+    """
+    Helper to remove some entries from a mapping hierarchy
+
+    Returns a new mapping. The original is not changed.
+    """
     data = data.copy()
     for d in drop:
         vv = data
-        if isinstance(d, tuple):
+        if isinstance(d, (tuple, list)):
             for dd in d[:-1]:
                 vv = vv[dd] = vv[dd].copy()
             d = d[-1]
@@ -92,7 +97,7 @@ class attrdict(dict):
 
     def __setattr__(self, a, b):
         if a.startswith("_"):
-            super(attrdict, self).__setattr__(a, b)
+            super().__setattr__(a, b)
         else:
             self[a] = b
 

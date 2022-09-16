@@ -19,6 +19,10 @@ __all__ = ["packer", "unpacker", "stream_unpacker", "Proxy"]
 
 
 class Proxy:
+    """
+    A proxy object, i.e. a placeholder for things that cannot pass through MsgPack.
+    """
+
     def __init__(self, name):
         self.name = name
 
@@ -52,12 +56,7 @@ def _decode(code, data):
 
 
 # single message packer
-packer = partial(
-    msgpack.packb,
-    strict_types=False,
-    use_bin_type=True,
-    default=_encode
-)
+packer = partial(msgpack.packb, strict_types=False, use_bin_type=True, default=_encode)
 
 # single message unpacker
 unpacker = partial(

@@ -178,17 +178,21 @@ def process_args(val, vars_, eval_, path_, proxy_=(), vs=None):
             if vs is not None:
                 vs.add(str(k))
             if v is NotGiven:
-                val = attrdict._delete(val, k)
+                val = attrdict._delete(val, k)  # pylint: disable=protected-access
             elif v is NoneType:
-                val = attrdict._delete(val, k)
+                val = attrdict._delete(val, k)  # pylint: disable=protected-access
                 vs.discard(str(k))
             else:
-                val = attrdict._update(val, k, v)
+                val = attrdict._update(val, k, v)  # pylint: disable=protected-access
             n += 1
     return val
 
 
 def read_cfg(name, path):
+    """
+    Read a YAML config file, either from the specified path
+    or from a couple of default paths.
+    """
     cfg = None
 
     def _cfg(path):
@@ -213,10 +217,14 @@ def read_cfg(name, path):
             _cfg(os.path.expanduser(f"~/.{name}.cfg"))
             _cfg(f"/etc/{name}/{name}.cfg")
             _cfg(f"/etc/{name}.cfg")
-        return cfg
+
+    return cfg
 
 
 def load_one(path, name, endpoint=None):
+    """
+    Load a single module
+    """
     mod = importlib.import_module(f"{path}.{name}")
     if endpoint is not None:
         mod = getattr(mod, endpoint)
@@ -224,7 +232,7 @@ def load_one(path, name, endpoint=None):
 
 
 def _namespaces(name):
-    import pkgutil
+    import pkgutil  # pylint: disable=import-outside-toplevel
 
     try:
         ext = importlib.import_module(name)
@@ -353,7 +361,10 @@ class Loader(click.Group):
     def list_commands(self, ctx):
         rv = super().list_commands(ctx)
 
-        subdir = getattr(self, "_util_subdir", None) or ctx.obj._sub_name
+        subdir = (
+            getattr(self, "_util_subdir", None)
+            or ctx.obj._sub_name  # pylint: disable=protected-access
+        )
 
         if subdir:
             try:
@@ -372,29 +383,39 @@ class Loader(click.Group):
                             rv.append(fn.name)
 
         if self._util_plugin:
-            for n, _ in list_ext(ctx.obj._ext_name, self._util_plugin):
+            for n, _ in list_ext(
+                ctx.obj._ext_name, self._util_plugin  # pylint: disable=protected-access
+            ):
                 rv.append(n)
         rv.sort()
         return rv
 
-    def get_command(self, ctx, name):  # pylint: disable=arguments-differ
-        command = super().get_command(ctx, name)
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
         if command is None and self._util_plugin is not None:
             try:
-                plugins = ctx.obj._ext_name
+                plugins = ctx.obj._ext_name  # pylint: disable=protected-access
 
-                command = load_one(f"{plugins}.{name}", self._util_plugin, "cli")
+                command = load_one(f"{plugins}.{cmd_name}", self._util_plugin, "cli")
             except (ModuleNotFoundError, FileNotFoundError) as exc:
-                if exc.name != f"{plugins}.{name}" and not exc.name.startswith(f"{plugins}.{name}._"):
+                if (
+                    exc.name != f"{plugins}.{cmd_name}"
+                    and not exc.name.startswith(  # pylint: disable=no-member ## duh?
+                        f"{plugins}.{cmd_name}._"
+                    )
+                ):
                     raise
 
         if command is None:
-            subdir = getattr(self, "_util_subdir", None) or ctx.obj._sub_name
+            subdir = (
+                getattr(self, "_util_subdir", None)
+                or ctx.obj._sub_name  # pylint: disable=protected-access
+            )
             if subdir is None:
                 return None
-            command = load_ext(subdir, name, "cli")
+            command = load_ext(subdir, cmd_name, "cli")
 
-        command.__name__ = command.name = name
+        command.__name__ = command.name = cmd_name
         return command
 
 
@@ -420,6 +441,7 @@ class MainLoader(Loader):
 #     and then returns "main_.main()", which is an awaitable, thus
 #     `wrap_main` acts as an async function.
 
+
 @load_subgroup(
     plugin="_main",
     cls=MainLoader,
@@ -430,7 +452,10 @@ class MainLoader(Loader):
 @click.option("-q", "--quiet", count=True, help="Be less verbose. Opposite of '--verbose'.")
 @click.option("-D", "--debug", count=True, help="Enable debug speed-ups (smaller keys etc).")
 @click.option(
-    "-l", "--log", multiple=True, help="Adjust log level. Example: '--log asyncactor=DEBUG'."
+    "-l",
+    "--log",
+    multiple=True,
+    help="Adjust log level. Example: '--log asyncactor=DEBUG'.",
 )
 @click.option("-c", "--cfg", type=click.Path("r"), default=None, help="Configuration file (YAML).")
 @click.option(
@@ -440,7 +465,11 @@ class MainLoader(Loader):
     help="Override a config entry. Example: '-C server.bind_default.port=57586'",
 )
 @click.option(
-    "-h", "-?", "--help", is_flag=True, help="Show help. Subcommands only understand '--help'."
+    "-h",
+    "-?",
+    "--help",
+    is_flag=True,
+    help="Show help. Subcommands only understand '--help'.",
 )
 @click.pass_context
 async def main_(ctx, verbose, quiet, help=False, **kv):  # pylint: disable=redefined-builtin
@@ -453,16 +482,16 @@ async def main_(ctx, verbose, quiet, help=False, **kv):  # pylint: disable=redef
 
     # The above `MainLoader.invoke` call causes this code to be called
     # twice instead of never.
-    if hasattr(ctx, '_moat_invoked'):
+    if hasattr(ctx, "_moat_invoked"):
         return
-    ctx._moat_invoked = True
+    ctx._moat_invoked = True  # pylint: disable=protected-access
     wrap_main(ctx=ctx, verbose=max(0, 1 + verbose - quiet), **kv)
     if help or ctx.invoked_subcommand is None and not ctx.protected_args:
         print(ctx.get_help())
         ctx.exit()
 
 
-def wrap_main(  # pylint: disable=redefined-builtin
+def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statements
     main=main_,
     *,
     name=None,
@@ -506,7 +535,7 @@ def wrap_main(  # pylint: disable=redefined-builtin
     if ext is None:
         ext = opts.get("ext", f"{name}.ext")
     if sub is True:
-        import inspect
+        import inspect  # pylint: disable=import-outside-toplevel
 
         sub = inspect.currentframe().f_back.f_globals["__package__"]
     elif sub is None:
@@ -522,8 +551,8 @@ def wrap_main(  # pylint: disable=redefined-builtin
         main.context_settings["obj"] = obj
         if help is not None:
             main.help = help
-    obj._ext_name = ext
-    obj._sub_name = sub
+    obj._ext_name = ext  # pylint: disable=protected-access
+    obj._sub_name = sub  # pylint: disable=protected-access
 
     if isinstance(CFG, str):
         p = Path(CFG)
@@ -614,7 +643,10 @@ def wrap_main(  # pylint: disable=redefined-builtin
             return main(args=args, standalone_mode=False, obj=obj)
 
     except click.exceptions.MissingParameter as exc:
-        print(f"You need to provide an argument { exc.param.name.upper() !r}.\n", file=sys.stderr)
+        print(
+            f"You need to provide an argument { exc.param.name.upper() !r}.\n",
+            file=sys.stderr,
+        )
         print(exc.cmd.get_help(exc.ctx), file=sys.stderr)
         sys.exit(2)
     except click.exceptions.UsageError as exc:

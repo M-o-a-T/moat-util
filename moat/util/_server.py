@@ -27,7 +27,7 @@ class _Server:
             )
         await self.handler(conn)
 
-    async def run(self):
+    async def run(self):  # pylint: disable=missing-function-docstring
         listener = await anyio.create_tcp_listener(local_port=self.port)
         if self._rdy is not None:
             self._rdy(listener)
@@ -36,6 +36,9 @@ class _Server:
 
 
 async def run_tcp_server(*a, **kv) -> _Server:
+    """
+    A simple, possibly-SSL TCP server that runs a handler for each incoming connection
+    """
     tg = kv.pop("tg", None)
     if tg is not None:
         server = _Server(tg, *a, **kv)
@@ -64,7 +67,7 @@ def gen_ssl(
         return ctx
 
     # pylint: disable=no-member
-    import ssl
+    import ssl  # pylint: disable=import-outside-toplevel
 
     ctx_ = ssl.create_default_context(
         purpose=ssl.Purpose.CLIENT_AUTH if server else ssl.Purpose.SERVER_AUTH

@@ -56,12 +56,12 @@ class Path(collections.abc.Sequence):
     representation (if they consist of simple elements).
     """
 
-    def __init__(self, *a, mark=''):
+    def __init__(self, *a, mark=""):
         self._data: list = a
         self.mark = mark
 
     @classmethod
-    def build(cls, data, *, mark=''):
+    def build(cls, data, *, mark=""):
         """Optimized shortcut to generate a path from an existing tuple"""
         if isinstance(data, Path):
             return data
@@ -81,7 +81,7 @@ class Path(collections.abc.Sequence):
 
         res = []
         if self.mark:
-            res.append(":m"+self.mark)
+            res.append(":m" + self.mark)
         if not self._data:
             res.append(":")
         for x in self._data:
@@ -107,7 +107,7 @@ class Path(collections.abc.Sequence):
                 res.append(":e")
             else:
                 if isinstance(x, (Path, tuple)):  # no spaces
-                    assert not len(x)
+                    assert len(x) == 0
                     x = "()"
                 else:
                     x = repr(x)
@@ -158,27 +158,29 @@ class Path(collections.abc.Sequence):
         if not self.mark:
             return other.mark
         if self.mark != other.mark:
-            raise RuntimeError(f"Can't concat paths with different tags: {mark} and {other.mark}")
+            raise RuntimeError(
+                f"Can't concat paths with different tags: {self.mark} and {other.mark}"
+            )
         return self.mark
 
     def __add__(self, other):
         mark = self._tag_add(other)
         if isinstance(other, Path):
             other = other._data
-        if not len(other):
+        if len(other) == 0:
             if self.mark != mark:
                 return Path(*self._data, mark=mark)
             return self
         return Path(*self._data, *other, mark=mark)
 
     def __iadd__(self, other):
-        mark = self._tag_add(self, other)
+        mark = self._tag_add(other)
         if isinstance(other, Path):
             other = other._data
-        if not len(other):
-            return self
-        self.mark = mark
-        self._data.extend(other)
+        if len(other) > 0:
+            self.mark = mark
+            self._data.extend(other)
+        return self
 
     def __truediv__(self, other):
         if isinstance(other, Path):
@@ -193,10 +195,10 @@ class Path(collections.abc.Sequence):
     # TODO add alternate output with hex integers
 
     def __repr__(self):
-        return "P(%r)" % (str(self),)
+        return f"P({str(self) !r})"
 
     @classmethod
-    def from_str(cls, path, *, mark=''):
+    def from_str(cls, path, *, mark=""):
         """
         Constructor to build a Path from its string representation.
         """
@@ -223,9 +225,9 @@ class Path(collections.abc.Sequence):
         mp = _RTagRE.match(path)
         if mp:
             if not mark:
-                mark = e[2:-1]
-            elif mark != e[2:-1]:
-                raise SyntaxError(f"Conflicting tags: {mark} vs. {e[2:-1]} at {pos}")
+                mark = mp[2:-1]
+            elif mark != mp[2:-1]:
+                raise SyntaxError(f"Conflicting tags: {mark} vs. {mp[2:-1]}")
             return cls(mark=mark)
 
         def add(x):
@@ -235,7 +237,9 @@ class Path(collections.abc.Sequence):
             try:
                 part += x
             except TypeError:
-                raise SyntaxError(f"Cannot add {x!r} at {pos}")
+                raise SyntaxError(  # pylint: disable=raise-missing-from
+                    f"Cannot add {x!r} at {pos}"
+                )
 
         def done(new_part):
             nonlocal part
@@ -283,7 +287,7 @@ class Path(collections.abc.Sequence):
                         mark = e[1:]
                     elif mark != e[1:]:
                         raise SyntaxError(f"Conflicting tags: {mark} vs. {e[1:]} at {pos}")
-                    part=True
+                    part = True
                 elif e == "n":
                     new(None, True)
                 elif e == "_":
@@ -345,7 +349,7 @@ class P(Path):
     objects.
     """
 
-    def __new__(cls, path, *, mark=''):
+    def __new__(cls, path, *, mark=""):
         if isinstance(path, Path):
             if path.mark != mark:
                 path = Path(*path, mark=mark)
@@ -378,7 +382,7 @@ def logger_for(path: Path):
 
     """
     this = __name__.split(".", 1)[0]
-    if not len(path):
+    if len(path) == 0:
         p = f"{this}.root"
     elif path[0] is None:
         p = f"{this}.meta"
@@ -492,5 +496,7 @@ class PathLongener:
 # expressions in paths. While it can be used for math, its primary function
 # is to process tuples.
 _eval = simpleeval.SimpleEval(functions={})
-_eval.nodes[ast.Tuple] = lambda node: tuple(_eval._eval(x) for x in node.elts)
+_eval.nodes[ast.Tuple] = lambda node: tuple(
+    _eval._eval(x) for x in node.elts  # pylint: disable=protected-access
+)
 path_eval = _eval.eval

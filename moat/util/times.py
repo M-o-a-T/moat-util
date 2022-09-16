@@ -15,7 +15,7 @@ _log = None
 TRACE = None
 
 
-def now(force=False):  # pylint: disable=unused-argument
+def now(force=False):  # pylint: disable=unused-argument,missing-function-docstring
     return dt.datetime.now()
 
 
@@ -29,7 +29,10 @@ units = (
 )  # seconds are handled explicitly, below
 
 
-def humandelta(delta):
+def humandelta(delta: dt.timedelta) -> str:
+    """
+    Convert a timedelta into a human-readable string.
+    """
     res = []
     res1 = ""
     if isinstance(delta, dt.timedelta):
@@ -45,10 +48,10 @@ def humandelta(delta):
         res1 = "-"
     for lim, name in units:
         if delta > lim:
-            res.append("%d %s" % (delta // lim, name))
+            res.append(f"{delta // lim} {name}")
             delta %= lim
-    if delta > 0.1:
-        res.append("%3.1f sec" % delta)
+    if delta >= 0.1:
+        res.append(f"{delta :%3.1f} sec")
 
     if len(res) < 1:
         return "now"
@@ -57,6 +60,11 @@ def humandelta(delta):
 
 
 def unixtime(tm):
+    """
+    Returns the Unix timestamp of a datetime object.
+
+    Deprecated: these days there's the `datetime.timestamp` method.
+    """
     return tm.timestamp()
 
 
@@ -241,7 +249,7 @@ def collect_words(cur, w):
         elif unit in ("y", "yr", "year", "years"):
             if p.yr is not None:
                 raise SyntaxError("You already specified the year")
-            if val > 0 and val < 100:
+            if 0 < val < 100:
                 val += p.now.year
             else:
                 if val < p.now.year or val >= p.now.year + 100:
@@ -352,12 +360,23 @@ def time_until(args, t_now=None, invert=False):
         return next_whatever
 
     check_month = step(
-        "mn", "month", 1, lim12, check_year, {"second": 0, "minute": 0, "hour": 0, "day": 1}
+        "mn",
+        "month",
+        1,
+        lim12,
+        check_year,
+        {"second": 0, "minute": 0, "hour": 0, "day": 1},
     )
     check_day = step("dy", "day", 1, lim30, check_month, {"second": 0, "minute": 0, "hour": 0})
     check_hour = step("h", "hour", 0, lim24, check_day, {"second": 0, "minute": 0})
     check_min = step("m", "minute", 0, lim60, check_hour, {"second": 0})
     check_sec = step("s", "second", 0, lim60, check_min, {})
+
+    def nth():
+        if p.nth > 0:
+            return 1 + ((p.res.day - 1) // 7)
+        else:
+            return -1 - ((lim30() - p.res.day) // 7)
 
     # Intermission: figure out how long until the condition is False
     if invert:
@@ -434,12 +453,6 @@ def time_until(args, t_now=None, invert=False):
             p.res = p.res.replace(hour=0, minute=0, second=0)
         if p.res < p.now:
             p.res = p.now
-
-    def nth():
-        if p.nth > 0:
-            return 1 + ((p.res.day - 1) // 7)
-        else:
-            return -1 - ((lim30() - p.res.day) // 7)
 
     if p.wk:  # week of the year
         _yr, wk, dow = p.res.isocalendar()

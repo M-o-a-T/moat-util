@@ -44,8 +44,13 @@ def _proc({ ",".join(variables) }):
 
 
 class Module(ModuleType):
+    """A dynamically-loaded module.
+
+    TODO.
+    """
+
     def __repr__(self):
-        return "<Module %s>" % (self.__class__.__name__,)
+        return f"<Module {self.__class__.__name__}%s>"
 
 
 def make_module(code, path):
