@@ -12,13 +12,14 @@ from typing import Awaitable
 
 import asyncclick as click
 
-from ._dict import attrdict, combine_dict, to_attrdict
+from ._dict import attrdict, to_attrdict
 from ._impl import NotGiven
+from ._merge import merge
 from ._msgpack import Proxy
 from ._path import P, path_eval
 from ._yaml import yload
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("_loader")
 
 __all__ = [
     "main_",
@@ -204,7 +205,7 @@ def read_cfg(name, path):
         if os.path.exists(path):
             try:
                 with open(path, "r") as cf:
-                    cfg = yload(cf)
+                    cfg = yload(cf, attr=True)
             except PermissionError:
                 pass
 
@@ -221,14 +222,60 @@ def read_cfg(name, path):
     return cfg
 
 
-def load_one(path, name, endpoint=None):
+def load_ext(name, *attr, err=False):
     """
-    Load a single module
+    Load a module
     """
-    mod = importlib.import_module(f"{path}.{name}")
-    if endpoint is not None:
-        mod = getattr(mod, endpoint)
-    return mod
+    path = name.split(".")
+    path.extend(attr[:-1])
+    dp = ".".join(path)
+    dpe = ".".join(path[:-1])
+    try:
+        mod = importlib.import_module(dp)
+    except (ModuleNotFoundError, FileNotFoundError) as exc:
+        logger.debug("Err %s: %r", dp, exc)
+        if err:
+            raise
+        if (
+            exc.name != dp
+            and exc.name != dpe
+            and not exc.name.startswith(f"{dp}._")  # pylint: disable=no-member ## duh?
+        ):
+            raise
+        return None
+    else:
+        try:
+            mod = getattr(mod, attr[-1])
+        except AttributeError:
+            if err:
+                raise
+
+            logger.debug("Err %s.%s", dp, attr[-1])
+            return None
+        return mod
+
+
+def load_cfg(name):
+    """
+    Load a module's configuration
+    """
+    cf = {}
+    try:
+        try:
+            cf = load_ext(name, "_config", "CFG", err=True)
+        except ModuleNotFoundError:
+            cf = load_ext(name, "config", "CFG", err=True)
+    except ModuleNotFoundError:
+        ext = sys.modules[name]
+        try:
+            p = ext.__path__
+        except AttributeError:
+            p = (str(Path(ext.__file__).parent),)
+        for d in p:
+            fn = Path(d) / "_config.yaml"
+            if fn.is_file():
+                merge(cf, yload(fn, attr=True))
+    return cf
 
 
 def _namespaces(name):
@@ -238,7 +285,11 @@ def _namespaces(name):
         ext = importlib.import_module(name)
     except ModuleNotFoundError:
         return ()
-    return pkgutil.iter_modules(ext.__path__, ext.__name__ + ".")
+    try:
+        p = ext.__path__
+    except AttributeError:
+        p = (str(Path(ext.__file__).parent),)
+    return pkgutil.iter_modules(p, ext.__name__ + ".")
 
 
 _ext_cache = defaultdict(dict)
@@ -266,63 +317,53 @@ def list_ext(name, func=None):
 
     TODO: This is not zip safe.
     """
+    logger.debug("List Ext %s (%s)", name, func)
     if name not in _ext_cache:
         try:
             _cache_ext(name)
         except ModuleNotFoundError:
             pass
     if func is None:
-        yield from iter(_ext_cache[name].items())
+        for a, b in _ext_cache[name].items():
+            logger.debug("Found %s %s", a, b)
+            yield a, b
         return
+
     for x, f in _ext_cache[name].items():
         if (f / ".no_load").is_file():
+            logger.debug("Skip %s", f)
             continue
         fn = f / (func + ".py")
         if not fn.is_file():
             fn = f / func / "__init__.py"
             if not fn.is_file():
                 # XXX this might be a namespace
+                logger.debug("No file: %s/%s", f, func)
                 continue
+        logger.debug("Found2 %s %s", x, f)
         yield (x, f)
 
 
-def load_ext(ext_name, name, func=None, endpoint=None):
+def load_subgroup(_fn=None, sub_pre=None, sub_post=None, ext_pre=None, ext_post=None, **kw):
     """
-    Load an external module.
+    A decorator like click.group, enabling loading of subcommands
 
-    Example: ``load_ext("distkv_ext","owfs","model")`` loads …/distkv_ext/owfs/model.py
-    and returns its global dict. When "ep" is given it returns the entry
-    point.
+    Internal extensions are loaded as ``{sub_pre}.*.{sub_post}``.
+    External extensions are loaded as ``{ext_pre}.*.{ext_post}``.
 
-    Any additional keywords are added to the module dictionary.
-
-    TODO: This doesn't yet return a proper module.
-    Don't use this with modules that are also loaded the regular way.
-    """
-
-    if ext_name not in _ext_cache:
-        _cache_ext(ext_name)
-
-    n = f"{ext_name}.{name}"
-    past = this_load.set(n)
-    try:
-        if endpoint is None:
-            return load_one(ext_name, name, endpoint=func)
-        else:
-            return load_one(n, func, endpoint=endpoint)
-    finally:
-        this_load.reset(past)
-
-
-def load_subgroup(_fn=None, plugin=None, **kw):
-    """
-    A decorator like click.group, but enables loading of subcommands
+    All other arguments are forwarded to `click.command`.
     """
 
     def _ext(fn, **kw):
         return click.command(**kw)(fn)
 
-    kw["cls"] = partial(kw.get("cls", Loader), _subdir=this_load.get(), _plugin=plugin)
+    kw["cls"] = partial(
+        kw.get("cls", Loader),
+        _util_sub_pre=sub_pre or this_load.get(),
+        _util_sub_post=sub_post,
+        _util_ext_pre=ext_pre,
+        _util_ext_post=ext_post,
+    )
 
     if _fn is None:
         return partial(_ext, **kw)
@@ -332,14 +373,25 @@ def load_subgroup(_fn=None, plugin=None, **kw):
 
 class Loader(click.Group):
     """
-    A Group that can load additional commands from a subfolder.
+    A `click.group` that loads additional commands from subfolders and/or extensions.
+
+    Subfolders: set _util_sub_pre to your module's name.
+        This works with namespace packages.
+        E.g. "distkv.command" loads "distkv.command.*.cli".
+
+    Extensions: set _util_ext_pre to the extension basename.
+        Set _util_ext_post to the name of the extension.
+
+        E.g. "distkv_ext"+"client" loads "distkv_ext.*.client.cli".
+
+    Both work in parallel.
 
     Caller:
 
         from moat.util import Loader
         from functools import partial
 
-        @click.command(cls=partial(Loader,_plugin='command'))
+        @click.command(cls=partial(Loader,_util_sub_post='command'))
         async def cmd()
             print("I am the main program")
 
@@ -353,68 +405,119 @@ class Loader(click.Group):
             print("I am", self.name)  # prints "subcmd"
     """
 
-    def __init__(self, *, _subdir=None, _plugin=None, **kw):
-        self._util_plugin = _plugin
-        self._util_subdir = _subdir
+    def __init__(
+        self,
+        *,
+        _util_sub_pre=None,
+        _util_sub_post=None,
+        _util_ext_pre=None,
+        _util_ext_post=None,
+        **kw,
+    ):
+        logger.debug(
+            "* Load: %s.*.%s / %s.*.%s",
+            _util_sub_pre,
+            _util_sub_post,
+            _util_ext_pre,
+            _util_ext_post,
+        )
+        if _util_sub_pre is not None:
+            self._util_sub_pre = _util_sub_pre
+        if _util_sub_post is not None:
+            self._util_sub_post = _util_sub_post
+        if _util_ext_pre is not None:
+            self._util_ext_pre = _util_ext_pre
+        if _util_ext_post is not None:
+            self._util_ext_post = _util_ext_post
         super().__init__(**kw)
+
+    def get_sub_ext(self, ctx):
+        """Fetch extension variables"""
+        sub_pre = getattr(
+            # pylint: disable=protected-access
+            self,
+            "_util_sub_pre",
+            ctx.obj._util_sub_pre,
+        )
+        sub_post = getattr(
+            # pylint: disable=protected-access
+            self,
+            "_util_sub_post",
+            ctx.obj._util_sub_post,
+        )
+        ext_pre = getattr(
+            # pylint: disable=protected-access
+            self,
+            "_util_ext_pre",
+            ctx.obj._util_ext_pre,
+        )
+        ext_post = getattr(
+            # pylint: disable=protected-access
+            self,
+            "_util_ext_post",
+            ctx.obj._util_ext_post,
+        )
+
+        if sub_pre is None:
+            sub_post = None
+        elif sub_post is None:
+            sub_pre = ("cli",)
+        elif isinstance(sub_post, str):
+            sub_post = sub_post.split(".")
+
+        if ext_pre is None:
+            ext_post = None
+        elif ext_post is None:
+            ext_pre = None
+        elif isinstance(ext_post, str):
+            ext_post = ext_post.split(".")
+            if len(ext_post) == 1:
+                ext_post.append("cli")
+
+        return sub_pre, sub_post, ext_pre, ext_post
 
     def list_commands(self, ctx):
         rv = super().list_commands(ctx)
+        sub_pre, sub_post, ext_pre, ext_post = self.get_sub_ext(ctx)
+        logger.debug("* List: %s.*.%s / %s.*.%s", sub_pre, sub_post, ext_pre, ext_post)
 
-        subdir = (
-            getattr(self, "_util_subdir", None)
-            or ctx.obj._sub_name  # pylint: disable=protected-access
-        )
+        if sub_pre:
+            for _finder, name, _ispkg in _namespaces(sub_pre):
+                logger.debug("Sub %s", name)
+                name = name.rsplit(".", 1)[1]
+                if load_ext(sub_pre, name, *sub_post):
+                    rv.append(name)
 
-        if subdir:
-            try:
-                paths = importlib.import_module(subdir).__path__
-            except ModuleNotFoundError:
-                pass
-            else:
-                for path in paths:
-                    path = Path(path)
-                    for fn in path.iterdir():
-                        if fn.name[0] in "._":
-                            continue
-                        if fn.suffix == ".py":
-                            rv.append(fn.name[:-3])
-                        elif (fn / "__init__.py").is_file():
-                            rv.append(fn.name)
-
-        if self._util_plugin:
-            for n, _ in list_ext(
-                ctx.obj._ext_name, self._util_plugin  # pylint: disable=protected-access
-            ):
+        if ext_pre:
+            for n, _ in list_ext(ext_pre):
+                logger.debug("Ext %s", n)
                 rv.append(n)
         rv.sort()
+        logger.debug("List: %r", rv)
         return rv
 
     def get_command(self, ctx, cmd_name):
         command = super().get_command(ctx, cmd_name)
-        if command is None and self._util_plugin is not None:
-            try:
-                plugins = ctx.obj._ext_name  # pylint: disable=protected-access
-                command = load_one(f"{plugins}.{cmd_name}", self._util_plugin, "cli")
-            except (ModuleNotFoundError, FileNotFoundError) as exc:
-                if (
-                    exc.name != plugins
-                    and exc.name != f"{plugins}.{cmd_name}"
-                    and not exc.name.startswith(  # pylint: disable=no-member ## duh?
-                        f"{plugins}.{cmd_name}._"
-                    )
-                ):
-                    raise
+
+        sub_pre, sub_post, ext_pre, ext_post = self.get_sub_ext(ctx)
+
+        if command is None and ext_pre is not None:
+            command = load_ext(ext_pre, cmd_name, *ext_post)
+            if command is not None:
+                cf = load_cfg(f"{ext_pre}.{cmd_name}")
+                merge(ctx.obj.cfg, cf, replace=False)
 
         if command is None:
-            subdir = (
-                getattr(self, "_util_subdir", None)
-                or ctx.obj._sub_name  # pylint: disable=protected-access
-            )
-            if subdir is None:
+            if sub_pre is None:
                 return None
-            command = load_ext(subdir, cmd_name, "cli")
+            command = load_ext(sub_pre, cmd_name, *sub_post)
+            if command is not None:
+                cf = load_cfg(f"{sub_pre}.{cmd_name}")
+                merge(ctx.obj.cfg, cf, replace=False)
 
+        if command is None:
+            # raise click.UsageError(f"No such subcommand: {cmd_name}")
+            return None
         command.__name__ = command.name = cmd_name
         return command
 
@@ -443,12 +546,12 @@ class MainLoader(Loader):
 
 
 @load_subgroup(
-    plugin="_main",
     cls=MainLoader,
     add_help_option=False,
     invoke_without_command=True,
 )  # , __file__, "command"))
 @click.option("-v", "--verbose", count=True, help="Be more verbose. Can be used multiple times.")
+@click.option("-L", "--debug-loader", is_flag=True, help="Debug submodule loading.")
 @click.option("-q", "--quiet", count=True, help="Be less verbose. Opposite of '--verbose'.")
 @click.option("-D", "--debug", count=True, help="Enable debug speed-ups (smaller keys etc).")
 @click.option(
@@ -495,8 +598,10 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     main=main_,
     *,
     name=None,
-    ext=None,
-    sub=None,
+    sub_pre=None,
+    sub_post=None,
+    ext_pre=None,
+    ext_post=None,
     conf=(),
     cfg=None,
     CFG=None,
@@ -504,24 +609,31 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     wrap=False,
     verbose=1,
     debug=0,
+    debug_loader=False,
     log=(),
     ctx=None,
     help=None,
 ) -> Awaitable:
     """
-    The main command entry point.
+    The main command entry point, when testing.
 
     main: special main function, defaults to moat.util.main_
     name: command name, defaults to {main}'s toplevel module name.
-    ext: extensions' namespace package, default to "{name}.ext"
-    sub: load *.cli() from this package, default=caller if True
+    {sub,ext}_{pre,post}: commands to load in submodules or extensions.
+
     conf: a list of additional config changes
     cfg: configuration file, default: various locations based on {name}, False=don't load
     CFG: default configuration (dir or file), relative to caller
-         Default: try to load from name._config
-    wrap: this is a subcommand. Don't set up logging, return the awaitable.
+         Default: load from name._config
+
+    wrap: Flag: this is a subcommand. Don't set up logging, return the awaitable.
     args: Argument list if called from a test, `None` otherwise.
-    help: Main help text of your code.
+    help: Help text of your code.
+
+    Internal extensions are loaded as ``{sub_pre}.*.{sub_post}``.
+    External extensions are loaded as ``{ext_pre}.*.{ext_post}``.
+
+    cfg.moat may contain values for {sub,ext}_{pre,post}.
     """
 
     obj = getattr(ctx, "obj", None)
@@ -532,25 +644,39 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     if opts is None:
         obj.moat = opts = attrdict()
 
+    if sub_pre is None:
+        sub_pre = opts.get("sub_pre", None)
+    else:
+        opts["sub_pre"] = sub_pre
+
+    if sub_post is None:
+        sub_post = opts.get("sub_post", None)
+    else:
+        opts["sub_post"] = sub_post
+
+    if ext_pre is None:
+        ext_pre = opts.get("ext_pre", None)
+    else:
+        opts["ext_pre"] = ext_pre
+
+    if ext_post is None:
+        ext_post = opts.get("ext_post", None)
+    else:
+        opts["ext_post"] = ext_post
+
     if name is None:
         name = opts.get("name", "moat")
     else:
         opts["name"] = name
-    if ext is None:
-        ext = opts.get("ext", f"{name}.ext")
-    else:
-        opts["ext"] = ext
-    if sub is True:
+
+    if sub_pre is True:
         import inspect  # pylint: disable=import-outside-toplevel
 
-        sub = inspect.currentframe().f_back.f_globals["__package__"]
-    elif sub is None:
-        sub = opts.get("sub", name)
-        # __name__.split(".", 1)[0] + "._main"
-        if sub is False:
-            sub = None
-    else:
-        opts["sub"] = sub
+        sub_pre = inspect.currentframe().f_back.f_globals["__package__"]
+    elif sub_pre is None:
+        sub_pre = name
+    if sub_post is None:
+        sub_post = "_main.cli"
 
     if main is None:
         if help is not None:
@@ -559,8 +685,11 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         main.context_settings["obj"] = obj
         if help is not None:
             main.help = help
-    obj._ext_name = ext  # pylint: disable=protected-access
-    obj._sub_name = sub  # pylint: disable=protected-access
+
+    obj._util_sub_pre = sub_pre  # pylint: disable=protected-access
+    obj._util_sub_post = sub_post  # pylint: disable=protected-access
+    obj._util_ext_pre = ext_pre  # pylint: disable=protected-access
+    obj._util_ext_post = ext_post  # pylint: disable=protected-access
 
     if CFG is None:
         CFG = opts.get("CFG")
@@ -570,32 +699,18 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         if not p.is_absolute():
             p = Path((main or main_).__file__).parent / p
         with open(p, "r") as cfgf:
-            CFG = yload(cfgf)
+            CFG = yload(cfgf, attr=True)
     elif CFG is None:
         CFG = obj.get("CFG", None)
         if CFG is None:
-            try:
-                CFG = importlib.import_module(f"{name}._config").CFG
-            except (ImportError, AttributeError):
-                CFG = {}
-
-    for n, d in list_ext(ext):
-        try:
-            try:
-                CFG[n] = combine_dict(load_ext(ext, n, "_config", "CFG"), CFG.get(n, {}), cls=attrdict)
-            except ModuleNotFoundError:
-                CFG[n] = combine_dict(load_ext(ext, n, "config", "CFG"), CFG.get(n, {}), cls=attrdict)
-        except ModuleNotFoundError:
-            fn = d / "_config.yaml"
-            if fn.is_file():
-                CFG[n] = yload(fn)
+            CFG = load_cfg(name)
 
     obj.stdout = CFG.get("_stdout", sys.stdout)  # used for testing
-    obj.CFG = to_attrdict(CFG)
+    obj.CFG = CFG
 
     cfg = to_attrdict(read_cfg(name, cfg))
     if cfg:
-        cfg = combine_dict(cfg, CFG, cls=attrdict)
+        merge(cfg, obj.CFG)
     else:
         cfg = CFG
     obj.cfg = cfg = to_attrdict(cfg)
@@ -613,18 +728,7 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
                 v = path_eval(v)
             except Exception:  # pylint: disable=broad-except
                 pass
-        c = obj.cfg
-        *sl, s = k.split(".")
-        for kk in sl:
-            try:
-                c = c[kk]
-            except KeyError:
-                c[kk] = attrdict()
-                c = c[kk]
-        if v is NotGiven:
-            del c[s]
-        else:
-            c[s] = v
+        obj.cfg._update(P(k), v)  # pylint: disable=protected-access
 
     if not wrap:
         # Configure logging. This is a somewhat arcane art.
@@ -645,6 +749,8 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         dictConfig(lcfg)
         logging.captureWarnings(verbose > 0)
         logger.disabled = False
+        if debug_loader:
+            logger.level = logging.DEBUG
 
     obj.logger = logging.getLogger(name)
 
