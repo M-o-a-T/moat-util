@@ -233,9 +233,10 @@ def load_ext(name, *attr, err=False):
     try:
         mod = importlib.import_module(dp)
     except (ModuleNotFoundError, FileNotFoundError) as exc:
-        logger.debug("Err %s: %r", dp, exc)
         if err:
             raise
+        if err is not None:
+            logger.debug("Err %s: %r", dp, exc)
         if (
             exc.name != dp
             and exc.name != dpe
@@ -260,13 +261,11 @@ def load_cfg(name):
     """
     Load a module's configuration
     """
-    cf = {}
-    try:
-        try:
-            cf = load_ext(name, "_config", "CFG", err=True)
-        except ModuleNotFoundError:
-            cf = load_ext(name, "config", "CFG", err=True)
-    except ModuleNotFoundError:
+    cf = load_ext(name, "_config", "CFG", err=None)
+    if cf is None:
+        cf = load_ext(name, "config", "CFG", err=None)
+    if cf is None:
+        cf = {}
         ext = sys.modules[name]
         try:
             p = ext.__path__
@@ -285,18 +284,20 @@ def _namespaces(name):
     try:
         ext = importlib.import_module(name)
     except ModuleNotFoundError:
+        logger.debug("No NS: %s", name)
         return ()
     try:
         p = ext.__path__
     except AttributeError:
         p = (str(Path(ext.__file__).parent),)
+    logger.debug("NS: %s %s", name, p)
     return pkgutil.iter_modules(p, ext.__name__ + ".")
 
 
 _ext_cache = defaultdict(dict)
 
 
-def _cache_ext(ext_name):
+def _cache_ext(ext_name, pkg_only):
     """List external modules
 
     Yields (name,path) tuples.
@@ -304,14 +305,16 @@ def _cache_ext(ext_name):
     TODO: This is not zip safe.
     """
     for finder, name, ispkg in _namespaces(ext_name):
-        if not ispkg:
+        if pkg_only and not ispkg:
+            logger.debug("ExtNoC %s", name)
             continue
+        logger.debug("ExtC %s", name)
         x = name.rsplit(".", 1)[-1]
         f = Path(finder.path) / x
         _ext_cache[ext_name][x] = f
 
 
-def list_ext(name, func=None):
+def list_ext(name, func=None, pkg_only=True):
     """List external modules
 
     Yields (name,path) tuples.
@@ -321,7 +324,7 @@ def list_ext(name, func=None):
     logger.debug("List Ext %s (%s)", name, func)
     if name not in _ext_cache:
         try:
-            _cache_ext(name)
+            _cache_ext(name, pkg_only)
         except ModuleNotFoundError:
             pass
     if func is None:
@@ -735,7 +738,11 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
                 pass
         obj.cfg._update(P(k), v)  # pylint: disable=protected-access
 
-    if not wrap:
+    if wrap:
+        pass
+    elif logging.root.handlers:
+        logging.debug("Logging already set up")
+    else:
         # Configure logging. This is a somewhat arcane art.
         lcfg = obj.cfg.setdefault("logging", dict())
         lcfg.setdefault("version", 1)
@@ -756,6 +763,8 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         logger.disabled = False
         if debug_loader:
             logger.level = logging.DEBUG
+            for p in sys.path:
+                logger.debug("Path: %s", p)
 
     obj.logger = logging.getLogger(name)
 

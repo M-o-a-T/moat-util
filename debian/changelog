@@ -1,3 +1,9 @@
+moat-util (0.35.0-1) unstable; urgency=medium
+
+  * Merge
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Thu, 18 May 2023 14:48:10 +0200
+
 moat-util (0.27.0-1) unstable; urgency=medium
 
   * Merge

@@ -2,7 +2,9 @@
 This module contains various helper functions and classes.
 """
 import logging
+import sys
 from collections import deque
+from contextlib import nullcontext
 from getpass import getpass
 from math import log10
 
@@ -15,14 +17,90 @@ __all__ = [
     "acount",
     "Cache",
     "NoLock",
+    "OptCtx",
     "digits",
     "num2byte",
     "byte2num",
     "split_arg",
     "id36",
+    "import_",
+    "load_from_cfg",
 ]
 
 NoneType = type(None)
+
+NoLock = nullcontext()
+
+
+class OptCtx:
+    """
+    Optional context. Unlike `contextlib.nullcontext` this doesn't return a
+    fixed value; instead it delegates to the wrapped context manager – if
+    there is one.
+    """
+
+    def __init__(self, obj=None):
+        self.obj = obj
+
+    def __enter__(self):
+        if self.obj is not None:
+            return self.obj.__enter__()
+        return None
+
+    def __exit__(self, *tb):
+        if self.obj is not None:
+            return self.obj.__exit__(*tb)
+        return None
+
+    async def __aenter__(self):
+        if self.obj is not None:
+            return await self.obj.__aenter__()
+        return None
+
+    async def __aexit__(self, *tb):
+        if self.obj is not None:
+            return await self.obj.__aexit__(*tb)
+
+
+def import_(name, off=0):
+    """
+    Import a module and access an object in it.
+
+    `import_("a.b.c.d.e", 2)` imports "a.b.c" and returns the e attribute
+    of object d from it.
+    """
+    n = name.split(".")
+    mn = ".".join(n[: -off if off else 99])
+    try:
+        res = __import__(mn)
+        for nn in n[1:]:
+            res = getattr(res, nn)
+    except Exception as exc:
+        sys.modules.pop(mn, None)
+        raise exc
+    return res
+
+
+def load_from_cfg(cfg, *a, _attr="server", _raise=False, **k):
+    """
+    A simple frontend to load a module, access a class/object from it,
+    and call that with the config (and whchever other arguments you want to
+    use).
+
+    The module+object name is the "server" attribute (or @_attr).
+    """
+    try:
+        name = cfg[_attr]
+    except KeyError:
+        if _raise:
+            raise
+        return None
+    if isinstance(name, (list, tuple)):
+        name, off = name
+    else:
+        off = 1
+    m = import_(name, off=off)
+    return m(cfg, *a, **k)
 
 
 def singleton(cls):
@@ -109,23 +187,6 @@ class Cache:
         while self._head > self._tail:
             self._q.popleft()
             self._tail += 1
-
-
-@singleton
-class NoLock:
-    """A dummy singleton that can replace a lock.
-
-    Usage::
-
-        with NoLock if _locked else self._lock:
-            pass
-    """
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *tb):
-        return
 
 
 def digits(n, digits=6):  # pylint: disable=redefined-outer-name
