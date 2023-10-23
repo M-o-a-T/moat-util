@@ -11,8 +11,9 @@ from time import time
 import anyio
 import asyncclick as click
 
+from . import packer, stream_unpacker
 from .main import load_subgroup
-from .msgpack import packer, stream_unpacker
+from .path import P, Path, path_eval
 from .times import humandelta, time_until
 from .yaml import yload, yprint
 
@@ -117,3 +118,28 @@ async def msgpack(decode, path):
         with sys.stdin if path == "-" else open(path, "r") as f:
             for obj in yload(f, multi=True):
                 sys.stdout.buffer.write(packer(obj))
+
+
+@cli.command("path", help=Path.__doc__, no_args_is_help=True)
+@click.option(
+    "-e", "--encode", is_flag=True, help="evaluate a Python expr and encode to a pathstr"
+)
+@click.option("-d", "--decode", is_flag=True, help="decode a path to a list")
+@click.argument("path", nargs=-1)
+async def path_(encode, decode, path):
+    """Explain/test MoaT paths"""
+    if not encode and not decode:
+        raise click.UsageError("Need -e or -d option.")
+    elif not decode:
+        try:
+            path = path_eval(" ".join(path))
+        except Exception as exc:  # pylint:disable=broad-exception-caught
+            print(repr(exc), file=sys.stderr)
+        if not isinstance(path, (list, tuple)):
+            path = path[0]
+        print(Path(*path))
+    elif encode:
+        raise click.UsageError("encode and decode at the same time??")
+    else:
+        for p in path:
+            print(repr(list(P(p))))

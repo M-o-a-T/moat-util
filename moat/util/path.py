@@ -1,10 +1,25 @@
 """
-This module contains various helper functions and classes.
+This module contains functions dealing with MoaT's Path objects.
+
+MoaT Paths are represented as dot-separated strings. The colon is special.
+See "moat util path" / moat.util.Path.__doc__ for details.
+
+Behind the scenes, a Path is an immutable lists with special representation.
+This is particularly useful in YAML (MoaT uses a ``!P`` prefix).
+
+They are also marked in msgpack and CBOR.
+
+Joining the string representation of two non-empty paths requires a dot iff
+the second part doesn't start with a separator-colon, but you shouldn't
+ever want to do that: paths are best processed as Path objects, not
+strings.
+
 """
 import ast
 import collections.abc
 import logging
 import re
+from base64 import b64decode, b64encode
 from functools import total_ordering
 from typing import Union
 
@@ -19,20 +34,17 @@ _RTagRE = re.compile("^:m[^:._]+:$")
 @total_ordering
 class Path(collections.abc.Sequence):
     """
-    This object represents the path to some node or other.
-
-    It is an immutable list with special representation, esp. in YAML,
-    and distinctive encoding in msgpack.
-
     Paths are represented as dot-separated strings. The colon is special.
     Inline (within an element):
 
+    \b
         :.  escapes a dot
         ::  escapes a colon
         :_  escapes a space
 
     As separator (starts a new element):
 
+    \b
         :t   True
         :f   False
         :e   empty string
@@ -41,19 +53,13 @@ class Path(collections.abc.Sequence):
         :b01 Binary integer
         :vXY Bytestring, inline
         :yAB Bytestring, hex encoding
-
+        :sAB Bytestring, base64 encoding
         :mXX This path is marked with XX
-        :XYZ otherwise: evaluate XYZ (may not start with a letter)
+        :iXY evaluate YZ as a Python expression.
+             The 'i' may be missing if YZ does not start with a letter.
 
     The empty path is denoted by a single colon. A path starting with a dot
     is illegal.
-
-    Joining two paths requires a dot iff the second part doesn't start with
-    a separator-colon, but you shouldn't ever want to do that: paths are
-    best stored in Path objects, not strings.
-
-    Paths are immutable and behave like lists with a human-readable string
-    representation (if they consist of simple elements).
     """
 
     def __init__(self, *a, mark=""):
@@ -73,7 +79,14 @@ class Path(collections.abc.Sequence):
         return p
 
     def __str__(self):
-        def _escol(x, spaces=True):  # XXX make the default adjustable?
+        """
+        Stringify the path to a dotstring.
+
+        Spaces are escaped somewhat aggressively, for better
+        doubleclickability. Do not depend on this.
+        """
+
+        def _escol(x, spaces=True):
             x = x.replace(":", "::").replace(".", ":.")
             if spaces:
                 x = x.replace(" ", ":_")
@@ -85,32 +98,35 @@ class Path(collections.abc.Sequence):
         if not self._data:
             res.append(":")
         for x in self._data:
-            if isinstance(x, str) and len(x):
-                if res:
-                    res.append(".")
-                res.append(_escol(x))
-            elif isinstance(x, (bytes, bytearray)):
-                if all(32 <= b < 127 for b in x):
-                    res.append(":v" + _escol(x.decode("ascii"), True))
+            if isinstance(x, str):
+                if x == "":
+                    res.append(":e")
                 else:
-                    res.append(":y" + x.hex())
-            elif isinstance(x, (Path, tuple)) and len(x):
-                x = ",".join(repr(y) for y in x)
-                res.append(":" + _escol(x))
+                    if res:
+                        res.append(".")
+                    res.append(_escol(x))
             elif x is True:
                 res.append(":t")
             elif x is False:
                 res.append(":f")
             elif x is None:
                 res.append(":n")
-            elif x == "":
-                res.append(":e")
-            else:
-                if isinstance(x, (Path, tuple)):  # no spaces
-                    assert len(x) == 0
-                    x = "()"
+            elif isinstance(x, (bytes, bytearray, memoryview)):
+                if all(32 <= b < 127 for b in x):
+                    res.append(":v" + _escol(x.decode("ascii"), True))
                 else:
-                    x = repr(x)
+                    res.append(":s" + b64encode(x).decode("ascii"))
+                    # no hex
+            elif isinstance(x, (Path, tuple)):
+                if len(x):
+                    x = ",".join(repr(y) for y in x)
+                    res.append(":" + _escol(x))
+                else:
+                    x = "()"
+            else:
+                x = repr(x)
+                if x[0].isalpha():
+                    x = "i" + x
                 res.append(":" + _escol(x))
         return "".join(res)
 
@@ -225,9 +241,9 @@ class Path(collections.abc.Sequence):
         mp = _RTagRE.match(path)
         if mp:
             if not mark:
-                mark = mp[2:-1]
-            elif mark != mp[2:-1]:
-                raise SyntaxError(f"Conflicting tags: {mark} vs. {mp[2:-1]}")
+                mark = mp[0][2:-1]
+            elif mark != mp[0][2:-1]:
+                raise SyntaxError(f"Conflicting tags: {mark} vs. {mp[0][2:-1]}")
             return cls(mark=mark)
 
         def add(x):
@@ -251,6 +267,8 @@ class Path(collections.abc.Sequence):
                             part = bytes.fromhex(part)
                         elif eval_ == -2:
                             part = part.encode("ascii")
+                        elif eval_ == -3:
+                            part = b64decode(part.encode("ascii"))
                         elif eval_ > 1:
                             part = int(part, eval_)
                         else:
@@ -292,6 +310,10 @@ class Path(collections.abc.Sequence):
                     new(None, True)
                 elif e == "_":
                     add(" ")
+                elif e[0] == "i":
+                    done(None)
+                    part = e[1:]
+                    eval_ = 1
                 elif e[0] == "b":
                     done(None)
                     part = e[1:]
@@ -308,6 +330,10 @@ class Path(collections.abc.Sequence):
                     done(None)
                     part = e[1:]
                     eval_ = -2
+                elif e[0] == "s":
+                    done(None)
+                    part = e[1:]
+                    eval_ = -3
                 else:
                     if part is None:
                         raise SyntaxError(f"Cannot parse {path!r} at {pos}")

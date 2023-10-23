@@ -11,7 +11,7 @@ from moat.util import P, Path, packer, unpacker, yformat, yload
 _valid = (
     (("a", "b", "c"), "a.b.c"),
     (("a", 2, "c"), "a:2.c"),
-    ((2, "c"), ":2.c"),
+    ((2, "c"), (":i2.c", ":2.c")),
     ((True, "c"), ":t.c"),
     ((1.23, "c"), ":1:.23.c"),
     (("", 1.23, "c"), ":e:1:.23.c"),
@@ -30,7 +30,7 @@ _valid = (
     (((1, "a b", 2), "c"), (":1,'a b',2.c", ":1,'a:_b',2.c")),
     ((), ":"),
     (("a", b"abc"), "a:vabc"),
-    (("a", b"ab\x99"), "a:y616299"),
+    (("a", b"ab\x99"), ("a:y616299", "a:sYWKZ")),
     (("a", b"a b"), "a:va:_b"),
     (("a", b"", "c"), "a:v.c"),
 )
@@ -86,6 +86,12 @@ def test_paths():
 
 
 def test_tagged():
+    p = P(":mfoo:")
+    assert p.mark == "foo"
+    assert len(p) == 0
+    p = Path()
+    p.mark = "bar"
+    assert str(p) == ":mbar:"
     p = P("a:mx.b")
     assert p.mark == "x"  # pylint: disable=no-member
     p = P(":mx.a.b")
