@@ -1,20 +1,22 @@
-#!/usr/bin/env python3
 """
 Basic tool support
-
 """
+from __future__ import annotations
+
+import anyio
 import logging  # pylint: disable=wrong-import-position
 import sys
 from datetime import datetime
 from time import time
 
-import anyio
-import asyncclick as click
-
+from . import packer, stream_unpacker
 from .main import load_subgroup
-from .msgpack import packer, stream_unpacker
+from .path import P, Path, path_eval
 from .times import humandelta, time_until
 from .yaml import yload, yprint
+from .path import P
+
+import asyncclick as click
 
 log = logging.getLogger()
 
@@ -22,7 +24,7 @@ log = logging.getLogger()
 @load_subgroup(prefix="moat.util")
 async def cli():
     """Various utilities"""
-    pass  # pylint:disable=unnecessary-pass
+    # pylint:disable=unnecessary-pass
 
 
 @cli.command(name="to")
@@ -79,7 +81,7 @@ y, yr   Year (2023–)
     if back and sleep:
         raise click.UsageError("We don't have time machines.")
 
-    t = datetime.now()
+    t = datetime.now().astimezone()
     if not now:
         t = time_until(args, t, invert=not inv, back=back)
     t = time_until(args, t, invert=inv, back=back)
@@ -99,7 +101,7 @@ y, yr   Year (2023–)
 @cli.command
 @click.option("-d", "--decode", is_flag=True, help="decode (default: encode)")
 @click.argument("path", type=click.Path(file_okay=True, dir_okay=False))
-async def msgpack(decode, path):
+def msgpack(decode, path):
     """encode/decode msgpack from/to YAML
 
     moat util msgpack data.yaml > data.mp    # encode
@@ -114,6 +116,62 @@ async def msgpack(decode, path):
                 n += 1
                 yprint(obj)
     else:
-        with sys.stdin if path == "-" else open(path, "r") as f:
+        with sys.stdin if path == "-" else open(path) as f:
             for obj in yload(f, multi=True):
                 sys.stdout.buffer.write(packer(obj))
+
+
+@cli.command("cfg")
+@click.argument("path", nargs=1)
+@click.pass_obj
+async def cfg_dump(obj, path):
+    """Emit the current configuration as a YAML file.
+
+    You can limit the output by path elements.
+    E.g., "cfg kv.connect.host" will print "localhost".
+
+    Single values are printed with a trailing line feed.
+
+    Dump the whole config with "moat util cfg :".
+    """
+    cfg = obj.cfg
+    for p in P(path):
+        try:
+            cfg = cfg[p]
+        except KeyError:
+            if obj.debug:
+                print("Unknown:", p, file=sys.stderr)
+            sys.exit(1)
+    if isinstance(cfg, str):
+        print(cfg, file=obj.stdout)
+    else:
+        yprint(cfg, stream=obj.stdout)
+
+
+@cli.command("path", help=Path.__doc__, no_args_is_help=True)
+@click.option(
+    "-e",
+    "--encode",
+    is_flag=True,
+    help="evaluate a Python expr and encode to a pathstr",
+)
+@click.option("-d", "--decode", is_flag=True, help="decode a path to a list")
+@click.argument("path", nargs=-1)
+async def path_(encode, decode, path):
+    """Explain/test MoaT paths"""
+    if not encode and not decode:
+        raise click.UsageError("Need -e or -d option.")
+    elif not decode:
+        try:
+            path = path_eval(" ".join(path))
+        except Exception as exc:  # pylint:disable=broad-exception-caught
+            print(repr(exc), file=sys.stderr)
+        if not isinstance(path, (list, tuple)):
+            path = path[0]
+        print(Path(*path))
+    elif encode:
+        raise click.UsageError("encode and decode at the same time??")
+    else:
+        for p in path:
+            print(repr(list(P(p))))
+

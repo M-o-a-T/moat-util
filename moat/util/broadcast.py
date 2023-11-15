@@ -1,12 +1,14 @@
 """
 Broadcasting support
 """
+from __future__ import annotations
+
 try:
     from weakref import WeakSet
 except ImportError:
     WeakSet = set
 
-from .compat import EndOfStream, WouldBlock
+from .compat import EndOfStream, WouldBlock, NotGiven
 from .impl import NotGiven
 from .queue import Queue
 
@@ -100,7 +102,7 @@ class BroadcastReader:
     def close(self):
         "close this reader, detaching it from its parent"
         self._close()
-        self.parent._closed_reader(self)  # pylint: disable=protected-access
+        self.parent._closed_reader(self)  # noqa:SLF001 pylint: disable=protected-access
 
     async def aclose(self):
         "close this reader, detaching it from its parent"
@@ -126,7 +128,7 @@ class Broadcaster:
                 print(msg)
 
         async with anyio.create_task_group() as tg, Broadcaster() as bc:
-            tg.spawn(rdr, aiter(bc))  # "bc" also works
+            tg.start_soon(rdr, aiter(bc))
             for x in range(5):
                 bc(x)
                 await anyio.sleep(0.01)
@@ -145,6 +147,7 @@ class Broadcaster:
     """
 
     _rdr = None
+    value = NotGiven
 
     def __init__(self, length=1):
         self.length = length
@@ -191,12 +194,16 @@ class Broadcaster:
 
     def __call__(self, value):
         """Enqueue a value to all readers"""
+        self.value = value
         for r in self._rdr:
             r(value)
+
+    async def read(self):
+        return self.value
 
     def close(self):
         "Close the broadcaster. No more writing."
         if self._rdr is not None:
             for r in self._rdr:
-                r._close()  # pylint: disable=protected-access
+                r._close()  # noqa:SLF001 pylint: disable=protected-access
             self._rdr = None
