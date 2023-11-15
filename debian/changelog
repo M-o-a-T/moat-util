@@ -4,6 +4,24 @@ moat-util (0.38.1-1) unstable; urgency=medium
 
  -- Matthias Urlichs <matthias@urlichs.de>  Wed, 15 Nov 2023 13:33:44 +0100
 
+moat-util (0.38.0-1) unstable; urgency=medium
+
+  * Merge
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Wed, 15 Nov 2023 13:26:40 +0100
+
+moat-util (0.36.0-1) unstable; urgency=medium
+
+  * Merge
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Wed, 25 Oct 2023 14:32:56 +0200
+
+moat-util (0.35.2-1) unstable; urgency=medium
+
+  * Merge
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Mon, 23 Oct 2023 18:08:21 +0200
+
 moat-util (0.35.0-1) unstable; urgency=medium
 
   * Merge
