@@ -1,3 +1,9 @@
+moat-util (0.38.1-2) unstable; urgency=medium
+
+  * Naming fix-up
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Wed, 15 Nov 2023 14:53:33 +0100
+
 moat-util (0.38.1-1) unstable; urgency=medium
 
   * Merge
