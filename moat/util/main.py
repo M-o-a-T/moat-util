@@ -7,6 +7,7 @@ from typing import Awaitable
 
 import importlib
 import logging
+import logging.config
 import os
 import sys
 from collections import defaultdict
@@ -14,14 +15,13 @@ from collections.abc import Mapping
 from contextlib import suppress
 from contextvars import ContextVar
 from functools import partial
-from logging.config import dictConfig
-from pathlib import Path
+from pathlib import Path as FSPath
 
 from .dict import attrdict, to_attrdict
 from .impl import NotGiven
 from .merge import merge
 from .msgpack import Proxy
-from .path import P, path_eval
+from .path import P, path_eval, Path
 from .yaml import yload
 from .exc import ungroup
 
@@ -45,8 +45,11 @@ this_load = ContextVar("this_load", default=None)
 
 NoneType = type(None)
 
+def _no_config(*a,**k):
+    import warnings
+    warnings.warn("Call to logging config ignored", stacklevel=2)
 
-def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False):
+def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False, par_name="Parameter"):
     """
     Attach the standard ``-v``/``-e``/``-p`` arguments to a ``click.command``.
     Passes ``vars_``/``eval_``/``path_`` args.
@@ -70,7 +73,7 @@ def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False):
             nargs=2,
             type=(P, P),
             multiple=True,
-            help="Parameter (name value), as path",
+            help=f"{par_name} (name value), as path",
             hidden=not with_path,
         )(proc)
 
@@ -88,7 +91,7 @@ def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False):
             nargs=2,
             type=(P, str),
             multiple=True,
-            help="Parameter (name value), evaluated",
+            help=f"{par_name} (name value), evaluated",
             hidden=not with_eval,
         )(proc)
 
@@ -99,7 +102,7 @@ def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False):
             nargs=2,
             type=(P, str),
             multiple=True,
-            help="Parameter (name value)",
+            help=f"{par_name} (name value)",
         )(proc)
 
         if with_proxy:
@@ -121,7 +124,7 @@ def attr_args(proc=None, with_path=True, with_eval=True, with_proxy=False):
         return _proc(proc)
 
 
-def process_args(val, vars_, eval_, path_, proxy_=(), vs=None):
+def process_args(val, vars_=(), eval_=(), path_=(), proxy_=(), no_path=False, vs=None):
     """
     process ``vars_``/``eval_``/``path_``/``proxy_`` args.
 
@@ -162,6 +165,8 @@ def process_args(val, vars_, eval_, path_, proxy_=(), vs=None):
             yield k, v
         for k, v in path_:
             v = P(v)
+            if no_path:
+                v = tuple(v)
             yield k, v
         for k, v in proxy_:
             v = Proxy(v)
@@ -280,9 +285,9 @@ def load_cfg(name):
         try:
             p = ext.__path__
         except AttributeError:
-            p = (str(Path(ext.__file__).parent),)
+            p = (str(FSPath(ext.__file__).parent),)
         for d in p:
-            fn = Path(d) / "_config.yaml"
+            fn = FSPath(d) / "_config.yaml"
             if fn.is_file():
                 merge(cf, yload(fn, attr=True))
     return cf
@@ -299,7 +304,7 @@ def _namespaces(name):
     try:
         p = ext.__path__
     except AttributeError:
-        p = (str(Path(ext.__file__).parent),)
+        p = (str(FSPath(ext.__file__).parent),)
     logger.debug("NS: %s %s", name, p)
     return pkgutil.iter_modules(p, ext.__name__ + ".")
 
@@ -320,7 +325,7 @@ def _cache_ext(ext_name, pkg_only):
             continue
         logger.debug("ExtC %s", name)
         x = name.rsplit(".", 1)[-1]
-        f = Path(finder.path) / x
+        f = FSPath(finder.path) / x
         _ext_cache[ext_name][x] = f
 
 
@@ -576,9 +581,9 @@ class MainLoader(Loader):
     add_help_option=False,
     invoke_without_command=True,
 )  # , __file__, "command"))
-@click.option("-v", "--verbose", count=True, help="Be more verbose. Can be used multiple times.")
+@click.option("-V", "--verbose", count=True, help="Be more verbose. Can be used multiple times.")
 @click.option("-L", "--debug-loader", is_flag=True, help="Debug submodule loading.")
-@click.option("-q", "--quiet", count=True, help="Be less verbose. Opposite of '--verbose'.")
+@click.option("-Q", "--quiet", count=True, help="Be less verbose. Opposite of '--verbose'.")
 @click.option("-D", "--debug", count=True, help="Enable debug speed-ups (smaller keys etc).")
 @click.option(
     "-l",
@@ -586,13 +591,7 @@ class MainLoader(Loader):
     multiple=True,
     help="Adjust log level. Example: '--log asyncactor=DEBUG'.",
 )
-@click.option("-c", "--cfg", type=click.Path("r"), default=None, help="Configuration file (YAML).")
-@click.option(
-    "-C",
-    "--conf",
-    multiple=True,
-    help="Override a config entry. Example: '-C server.bind_default.port=57586'",
-)
+@click.option("-c", "--cfg", type=click.Path("r"), default=None, help="Configuration file (YAML).", multiple=True)
 @click.option(
     "-h",
     "-?",
@@ -600,6 +599,7 @@ class MainLoader(Loader):
     is_flag=True,
     help="Show help. Subcommands only understand '--help'.",
 )
+@attr_args(par_name="Config item")
 @click.pass_context
 async def main_(ctx, verbose, quiet, help=False, **kv):  # pylint: disable=redefined-builtin
     """
@@ -623,12 +623,12 @@ async def main_(ctx, verbose, quiet, help=False, **kv):  # pylint: disable=redef
 def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statements
     main=main_,
     *,
+    vars_,eval_,path_,
     name=None,
     sub_pre=None,
     sub_post=None,
     ext_pre=None,
     ext_post=None,
-    conf=(),
     cfg=None,
     CFG=None,
     args=None,
@@ -647,8 +647,7 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     name: command name, defaults to {main}'s toplevel module name.
     {sub,ext}_{pre,post}: commands to load in submodules or extensions.
 
-    conf: a list of additional config changes
-    cfg: configuration file, default: various locations based on {name}, False=don't load
+    cfg: configuration file(s), default: various locations based on {name}, False=don't load
     CFG: default configuration (dir or file), relative to caller
          Default: load from name._config
 
@@ -721,9 +720,9 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         CFG = opts.get("CFG")
 
     if isinstance(CFG, str):
-        p = Path(CFG)
+        p = FSPath(CFG)
         if not p.is_absolute():
-            p = Path((main or main_).__file__).parent / p
+            p = FSPath((main or main_).__file__).parent / p
         with open(p) as cfgf:
             CFG = yload(cfgf, attr=True)
     elif CFG is None:
@@ -734,7 +733,14 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     obj.stdout = CFG.get("_stdout", sys.stdout)  # used for testing
     obj.CFG = CFG
 
-    cfg = to_attrdict(read_cfg(name, cfg))
+    if isinstance(cfg,(list,tuple)):
+        cf = { }
+        for fn in cfg:
+            merge(cf, read_cfg(name, fn), replace=True)
+        cfg = to_attrdict(cf)
+    else:
+        cfg = to_attrdict(read_cfg(name, cfg))
+
     if cfg:
         merge(cfg, obj.CFG, replace=False)
     else:
@@ -744,20 +750,11 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
     obj.debug = verbose
     obj.DEBUG = debug
 
-    for k in conf:
-        # ruff:noqa:PLW2901 # var overwritten
-        try:
-            k, v = k.split("=", 1)
-        except ValueError:
-            v = NotGiven
-        else:
-            with suppress(Exception):  # pylint: disable=broad-except
-                v = path_eval(v)
-        obj.cfg._update(P(k), v)  # pylint: disable=protected-access
+    obj.cfg = process_args(obj.cfg, vars_,eval_,path_)
 
     if wrap:
         pass
-    elif logging.root.handlers:
+    elif hasattr(logging.root,"_MoaT"):
         logging.debug("Logging already set up")
     else:
         # Configure logging. This is a somewhat arcane art.
@@ -775,13 +772,19 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
         for k in log:
             k, v = k.split("=")
             lcfg["loggers"].setdefault(k, {})["level"] = v
-        dictConfig(lcfg)
+        logging.config.dictConfig(lcfg)
+
+        logging.basicConfig = _no_config
+        logging.config.dictConfig = _no_config
+        logging.config.fileConfig = _no_config
+
         logging.captureWarnings(verbose > 0)
         logger.disabled = False
         if debug_loader:
             logger.level = logging.DEBUG
             for p in sys.path:
                 logger.debug("Path: %s", p)
+        logging.root._MoaT = True
 
     obj.logger = logging.getLogger(name)
 

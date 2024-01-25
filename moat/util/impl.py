@@ -24,7 +24,7 @@ __all__ = [
     "num2byte",
     "byte2num",
     "split_arg",
-    "id36",
+    "num2id",
     "import_",
     "load_from_cfg",
 ]
@@ -137,7 +137,7 @@ class NotGiven:
 
 
 def count(it):
-    """iter count"""
+    """counts the length of an iterator"""
     n = 0
     for _ in it:
         n += 1
@@ -145,7 +145,7 @@ def count(it):
 
 
 async def acount(it):
-    """async iter count"""
+    """counts the length of an async iterator"""
     n = 0
     async for _ in it:
         n += 1
@@ -254,9 +254,13 @@ def split_arg(p, kw):
 _alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
-def id36(number):
+def num2id(number, alphabet=_alphabet):
     """
-    Encode a number / object ID in base36.
+    Encode a number / object ID in baseXX, or whatever.
+
+    No, this doesn't care about num2id(739172) or similar.
+
+    You can pass a different alphabet as the second parameter.
     """
     if not isinstance(number, int):
         if isinstance(number, (float, complex, str, bytes, bytearray)):
@@ -267,12 +271,12 @@ def id36(number):
     res = []
 
     while number:
-        number, i = divmod(number, 36)
-        res.append(_alphabet[i])
+        number, i = divmod(number, len(alphabet))
+        res.append(alphabet[i])
     if is_negative:
         res.append("-")
     elif not res:
-        return _alphabet[0]
+        return alphabet[0]
     res.reverse()
 
     return "".join(res)
