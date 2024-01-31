@@ -1,3 +1,2 @@
-# compatibility with µPy
-
-from random import Random
+# noqa: D100  # compatibility with µPy
+from __future__ import annotations
