@@ -4,8 +4,6 @@ Exception handling helpers
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-
 __all__ = ["exc_iter", "ungroup"]
 
 
@@ -20,16 +18,32 @@ def exc_iter(exc):
         yield exc
 
 
-@contextmanager
-def ungroup():
+class ungroup:
     """
-    Unwraps single-member exception groups for easier handling in
-    high-level error reporting.
+    A sync+async context manager that unwraps single-element
+    exception groups.
     """
-    try:
-        yield None
-    except BaseException as e:
+    def __call__(self):
+        "Singleton. Returns itself."
+        return self
+
+    def __enter__(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    def __exit__(self, c, e, t):
+        if e is None:
+            return
         while isinstance(e, BaseExceptionGroup):
-            if len(e.exceptions) == 1:
-                e = e.exceptions[0]
+            if len(e.exceptions) != 1:
+                break
+            e = e.exceptions[0]
         raise e from None
+
+    async def __aexit__(self, c, e, t):
+        return self.__exit__(c, e, t)
+
+
+ungroup = ungroup()
