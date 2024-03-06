@@ -1,4 +1,7 @@
-/debian/
+__pycache__/
+/.pybuild/
+/dist/
+/*.egg-info/
 .#*
 \#*
 /build/
