@@ -46,3 +46,5 @@ __pycache__/
 /.venv
 /venv/
 /wheels/
+*.swp
+*.swo
