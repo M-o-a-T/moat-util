@@ -68,7 +68,7 @@ class Path(collections.abc.Sequence):
 
     The empty path is denoted by a single colon. A dotted path that starts
     or ends with a dot, or that contains empty elements (two non-escaped dots,
-    one dot followed by a separator) is illegal. 
+    one dot followed by a separator) is illegal.
 
     The alternate slash-path representation uses slashes as separators.
     Colon elements are disallowed within elements.
@@ -87,11 +87,12 @@ class Path(collections.abc.Sequence):
             return cls(*data)
         p = object.__new__(cls)
         p._data = data  # noqa:SLF001
-        p._mark = mark
+        p._mark = mark  # noqa:SLF001
         return p
 
     @property
     def mark(self):
+        "accessor for the path's mark"
         return self._mark
 
     def with_mark(self, mark=""):
@@ -110,7 +111,7 @@ class Path(collections.abc.Sequence):
 
         def _escol(x, spaces=True):
             x = x.replace(":", "::")
-            if slash:
+            if slash:  # noqa: SIM108
                 x = x.replace("/", ":|")
             else:
                 x = x.replace(".", ":.")
@@ -121,15 +122,18 @@ class Path(collections.abc.Sequence):
         res = []
         if self.mark:
             res.append(":m" + self.mark)
-        if not self._data and not slash:
-            res.append(":")
+        if not self._data:
+            if not slash:
+                res.append(":")
+            elif not self.mark:
+                res.append(":m")
         for x in self._data:
             if slash and res:
                 res.append("/")
 
             if isinstance(x, str):
                 if slash:
-                    res.append(_escol(x))
+                    res.append(_escol(x, False))
                 elif x == "":
                     res.append(":e")
                 else:
@@ -150,14 +154,14 @@ class Path(collections.abc.Sequence):
                     # no hex
             elif isinstance(x, (Path, tuple)):
                 if len(x):
-                    x = ",".join(repr(y) for y in x)
+                    x = ",".join(repr(y) for y in x)  # noqa: PLW2901
                     res.append(":" + _escol(x))
                 else:
-                    x = "()"
+                    x = "()"  # noqa: PLW2901
             else:
-                x = repr(x)
+                x = repr(x)  # noqa: PLW2901
                 if x[0].isalpha():
-                    x = "i" + x
+                    x = "i" + x  # noqa: PLW2901
                 res.append(":" + _escol(x))
         return "".join(res)
 
@@ -230,24 +234,24 @@ class Path(collections.abc.Sequence):
             return self
         return Path(*self._data, *other, mark=mark)
 
-#   def __iadd__(self, other):
-#       mark = self._tag_add(other)
-#       if isinstance(other, Path):
-#           other = other._data
-#       if len(other) > 0:
-#           self._mark = mark
-#           self._data.extend(other)
-#       return self
+    #   def __iadd__(self, other):
+    #       mark = self._tag_add(other)
+    #       if isinstance(other, Path):
+    #           other = other._data
+    #       if len(other) > 0:
+    #           self._mark = mark
+    #           self._data.extend(other)
+    #       return self
 
     def __truediv__(self, other):
         if isinstance(other, Path):
             raise TypeError("You want + not /")
         return Path(*self._data, other, mark=self.mark)
 
-#   def __itruediv__(self, other):
-#       if isinstance(other, Path):
-#           raise TypeError("You want + not /")
-#       self._data.append(other)
+    #   def __itruediv__(self, other):
+    #       if isinstance(other, Path):
+    #           raise TypeError("You want + not /")
+    #       self._data.append(other)
 
     # TODO add alternate output with hex integers
 
@@ -412,12 +416,12 @@ class Path(collections.abc.Sequence):
             return cls.build(path, mark=mark)
 
         def _decol(s):
-            return s.replace(":|","/").replace(":_"," ").replace("::",":")
-        
+            return s.replace(":|", "/").replace(":_", " ").replace("::", ":")
+
         marks = 0
 
         try:
-            for pos,p in enumerate(path.split("/")):
+            for pos, p in enumerate(path.split("/")):
                 if p == "":
                     res.append("")
                 elif p[0] != ":":
@@ -447,17 +451,17 @@ class Path(collections.abc.Sequence):
                     if len(p) == 2:
                         res.append(True)
                 elif p[1] == "v":
-                    res.append(_decol(p[2]).encode("ascii"))
+                    res.append(_decol(p[2:]).encode("ascii"))
                 elif p[1] == "x":
                     res.append(int(p[2:], 16))
                 elif p[1] == "y":
                     res.append(bytes.fromhex(p[2:]))
 
                 else:
-                    res.append(path_eval(p))
+                    res.append(path_eval(p[1:]))
 
-                if len(res) != pos+1-marks:
-                    raise RuntimeError("Slashed-Path syntax")
+                if len(res) != pos + 1 - marks:
+                    raise RuntimeError("Slashed-Path syntax")  # noqa: TRY301
 
         except Exception as exc:
             raise SyntaxError(f"Cannot eval {path!r}, part {pos+1}") from exc
@@ -466,13 +470,11 @@ class Path(collections.abc.Sequence):
             mark = ""
         r = cls(*res, mark=mark)
         return r
-                
 
     @classmethod
     def _make(cls, loader, node):
         value = loader.construct_scalar(node)
         return cls.from_str(value)
-
 
 
 class P(Path):
