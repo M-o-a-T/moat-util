@@ -1,3 +1,9 @@
+moat-util (0.45.0-2) unstable; urgency=medium
+
+  * Use "make test" for testing (path!)
+
+ -- Matthias Urlichs <matthias@urlichs.de>  Thu, 10 Oct 2024 09:39:10 +0200
+
 moat-util (0.45.0-1) unstable; urgency=medium
 
   * Merge
