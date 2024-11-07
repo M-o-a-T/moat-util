@@ -30,7 +30,10 @@ except ImportError:
 from .path import P, path_eval
 from .yaml import yload
 
-from typing import Awaitable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Awaitable  # noqa:UP035
 
 logger = logging.getLogger("_loader")
 
@@ -830,7 +833,7 @@ def wrap_main(  # pylint: disable=redefined-builtin,inconsistent-return-statemen
 
     except click.exceptions.MissingParameter as exc:
         print(
-            f"You need to provide an argument { exc.param.name.upper() !r}.\n",
+            f"You need to provide an argument {exc.param.name.upper()!r}.\n",
             file=sys.stderr,
         )
         print(exc.cmd.get_help(exc.ctx), file=sys.stderr)
