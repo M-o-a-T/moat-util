@@ -14,6 +14,11 @@ the second part doesn't start with a separator-colon, but you shouldn't
 ever want to do that: paths are best processed as Path objects, not
 strings.
 
+
+This module also exports the magic paths "Root", "S_Root", "P_Root" and
+"Q_Root". These are contextvars and can be set externally. They are
+interpolated into slashed Path representations.
+
 """
 
 from __future__ import annotations
@@ -24,14 +29,16 @@ import logging
 import re
 from base64 import b64decode, b64encode
 from functools import total_ordering
+from contextvars import ContextVar
+from moat.lib.codec.proxy import DProxy, as_proxy
+from .dict import attrdict
 
 import simpleeval
 
-__all__ = ["Path", "P", "PS", "logger_for", "PathShortener", "PathLongener", "path_eval"]
+__all__ = ["Path", "P", "PS", "logger_for", "PathShortener", "PathLongener", "path_eval", "Root"]
 
 _PartRE = re.compile("[^:._]+|_|:|\\.")
 _RTagRE = re.compile("^:m[^:._]+:$")
-
 
 @total_ordering
 class Path(collections.abc.Sequence):
@@ -65,6 +72,10 @@ class Path(collections.abc.Sequence):
 
     \b
         :mXX This path is marked with XX
+        :R   An alias for the current root
+        :Q   An alias for an alternate root
+        :P   An alias for another alternate root
+        :S   An alias for yet another alternate root
 
     The empty path is denoted by a single colon. A dotted path that starts
     or ends with a dot, or that contains empty elements (two non-escaped dots,
@@ -77,9 +88,28 @@ class Path(collections.abc.Sequence):
     "% n" removes n items from the end.
 
     All Path objects are read-only.
+
+    The Root paths are context variables. If they are set and an "incoming"
+    path has one of them as prefix, said prefix is replaced with a placeholder
+    for this root. It is expanded in "slashed" form but not as native
+    representation. That way, specific paths can be encoded in a root-free
+    form, thus if you ever rename the root, or move entries from one
+    MoaT-Link setup to another, everything still works.
     """
 
-    def __init__(self, *a, mark=""):
+    def __init__(self, *a, mark="", scan=False):
+        if a and scan:
+            i = 0
+            while i < len(a):
+                for proxy in _Roots.values():
+                    if not proxy:
+                        continue
+
+                    if len(a) >= i+len(proxy) and a[i:i+len(proxy)] == proxy:
+                        a = a[:i] + (proxy,) + a[i+len(proxy):]
+                        break
+                i += 1
+
         self._data: tuple = a
         self._mark = mark
 
@@ -160,6 +190,14 @@ class Path(collections.abc.Sequence):
                 res.append(":f")
             elif x is None:
                 res.append(":n")
+            elif isinstance(x, _RootPath):
+                if not slash:
+                    res.append(f":{x.key}")
+                else:
+                    if not x or len(x) == 0:
+                        raise RuntimeError("You need to set {x.name}")
+                    res.append(x.slashed)
+
             elif isinstance(x, (bytes, bytearray, memoryview)):
                 if all(32 <= b < 127 for b in x):
                     res.append(":v" + _escol(x.decode("ascii"), True))
@@ -282,7 +320,7 @@ class Path(collections.abc.Sequence):
         return f"P({str(self)!r})"
 
     @classmethod
-    def from_str(cls, path, *, mark=""):
+    def from_str(cls, path, *, mark="", scan=False):
         """
         Constructor to build a Path from its string representation.
         """
@@ -374,6 +412,8 @@ class Path(collections.abc.Sequence):
                     part = True
                 elif e == "n":
                     new(None, True)
+                elif e in _Roots:
+                    new(_Roots[e], True)
                 elif e == "_":
                     add(" ")
                 elif e[0] == "i":
@@ -425,10 +465,10 @@ class Path(collections.abc.Sequence):
         if esc or part is None:
             raise SyntaxError(f"Cannot parse {path!r} at {pos}")
         done(None)
-        return cls(*res, mark=mark)
+        return cls(*res, mark=mark, scan=scan)
 
     @classmethod
-    def from_slashed(cls, path, *, mark=None):
+    def from_slashed(cls, path, *, mark=None, scan=True):
         """
         Constructor to build a Path from its slashed string representation.
         """
@@ -452,6 +492,8 @@ class Path(collections.abc.Sequence):
                 elif p == ":":
                     pass
 
+                elif p[1] == ":":
+                    res.append(_decol(p))
                 elif p[1] == "b":
                     res.append(int(p[2:], 2))
                 elif p[1] == "e":
@@ -469,7 +511,7 @@ class Path(collections.abc.Sequence):
                     if len(p) == 2:
                         res.append(None)
                 elif p[1] == "s":
-                    res.append(b64decode(_decol(p[2]).encode("ascii")))
+                    res.append(b64decode(_decol(p[2:]).encode("ascii")))
                 elif p[1] == "t":
                     if len(p) == 2:
                         res.append(True)
@@ -491,7 +533,7 @@ class Path(collections.abc.Sequence):
 
         if mark is None:
             mark = ""
-        r = cls(*res, mark=mark)
+        r = cls(*res, mark=mark, scan=scan)
         return r
 
     @classmethod
@@ -506,14 +548,33 @@ class P(Path):
 
     For idempotency (required by ``click``) it transparently accepts `Path`
     objects.
+
+    Scanning for prefixes is disabled. Use this class for paths embedded in
+    MoaT code.
     """
 
-    def __new__(cls, path, *, mark=""):  # noqa:D102
+    def __new__(cls, path, *, mark="", scan=False):  # noqa:D102
         if isinstance(path, Path):
             if path.mark != mark:
-                path = Path(*path, mark=mark)
+                path = Path(*path, mark=mark, scan=scan)
             return path
-        return Path.from_str(path, mark=mark)
+        return Path.from_str(path, mark=mark, scan=scan)
+
+
+class PP(Path):
+    """
+    A Path subclass that delegates to `Path.from_str`.
+
+    This is identical to `P` except that scanning for prefixes is enabled.
+    Use this class for command-line processing.
+    """
+
+    def __new__(cls, path, *, mark="", scan=True):  # noqa:D102
+        if isinstance(path, Path):
+            if path.mark != mark:
+                path = Path(*path, mark=mark, scan=scan)
+            return path
+        return Path.from_str(path, mark=mark, scan=scan)
 
 
 class PS(Path):
@@ -529,7 +590,7 @@ class PS(Path):
             if path.mark != mark:
                 path = Path(*path, mark=mark)
             return path
-        return Path.from_slashed(path, mark=mark)
+        return Path.from_slashed(path, mark=mark, scan=True)
 
 
 def logger_for(path: Path):
@@ -705,3 +766,53 @@ _eval.nodes[ast.Tuple] = lambda node: tuple(
     for x in node.elts
 )
 path_eval = _eval.eval
+
+
+# Here we declare our bunch of "root" variables.
+
+Root = ContextVar("Root", default=None)
+
+class _RootPath(Path):
+    _mark = None
+    def __init__(self, key, var, name):
+        self._key = key
+        self._var = var
+        self._name = name
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def key(self):
+        return self._key
+
+    def __bool__(self):
+        p = self._var.get()
+        return p is not None
+
+    @property
+    def _data(self):
+        p = self._var.get()
+        if p is None:
+            return None
+        return self._var.get()._data
+
+_root = _RootPath("R",Root,"Root")
+as_proxy("R", _root)
+_Roots = {"R": _root}
+
+for _idx in "SPQ":  # and R. Yes I know.
+    _name = f"{_idx}_Root"
+    _ctx = ContextVar(_name, default=None)
+    _path = _RootPath(_idx,_ctx,_name)
+
+    globals()[_name] = _ctx
+    __all__.append(_name)
+
+    _Roots[_idx] = _path
+    as_proxy(f"_P{_idx}", _path)
+
+del _idx,_name,_ctx,_path
+
+
