@@ -28,17 +28,18 @@ import collections.abc
 import logging
 import re
 from base64 import b64decode, b64encode
-from functools import total_ordering
 from contextvars import ContextVar
-from moat.lib.codec.proxy import DProxy, as_proxy
-from .dict import attrdict
+from functools import total_ordering
 
 import simpleeval
+
+from moat.lib.codec.proxy import as_proxy
 
 __all__ = ["Path", "P", "PS", "logger_for", "PathShortener", "PathLongener", "path_eval", "Root"]
 
 _PartRE = re.compile("[^:._]+|_|:|\\.")
 _RTagRE = re.compile("^:m[^:._]+:$")
+
 
 @total_ordering
 class Path(collections.abc.Sequence):
@@ -105,8 +106,8 @@ class Path(collections.abc.Sequence):
                     if not proxy:
                         continue
 
-                    if len(a) >= i+len(proxy) and a[i:i+len(proxy)] == proxy:
-                        a = a[:i] + (proxy,) + a[i+len(proxy):]
+                    if len(a) >= i + len(proxy) and a[i : i + len(proxy)] == proxy:
+                        a = a[:i] + (proxy,) + a[i + len(proxy) :]
                         break
                 i += 1
 
@@ -569,7 +570,7 @@ class PP(Path):
     Use this class for command-line processing.
     """
 
-    def __new__(cls, path, *, mark="", scan=True):  # noqa:D102
+    def __new__(cls, path, *, mark="", scan=True):
         if isinstance(path, Path):
             if path.mark != mark:
                 path = Path(*path, mark=mark, scan=scan)
@@ -772,8 +773,10 @@ path_eval = _eval.eval
 
 Root = ContextVar("Root", default=None)
 
+
 class _RootPath(Path):
     _mark = None
+
     def __init__(self, key, var, name):
         self._key = key
         self._var = var
@@ -796,23 +799,22 @@ class _RootPath(Path):
         p = self._var.get()
         if p is None:
             return None
-        return self._var.get()._data
+        return self._var.get()._data  # noqa:SLF001
 
-_root = _RootPath("R",Root,"Root")
+
+_root = _RootPath("R", Root, "Root")
 as_proxy("R", _root)
 _Roots = {"R": _root}
 
 for _idx in "SPQ":  # and R. Yes I know.
     _name = f"{_idx}_Root"
     _ctx = ContextVar(_name, default=None)
-    _path = _RootPath(_idx,_ctx,_name)
+    _path = _RootPath(_idx, _ctx, _name)
 
     globals()[_name] = _ctx
-    __all__.append(_name)
+    __all__ += [_name]  # noqa:PLE0604
 
     _Roots[_idx] = _path
     as_proxy(f"_P{_idx}", _path)
 
-del _idx,_name,_ctx,_path
-
-
+del _idx, _name, _ctx, _path
