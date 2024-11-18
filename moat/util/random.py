@@ -7,6 +7,9 @@ import random
 
 __all__ = ["gen_ident"]
 
-def gen_ident(k=10, /):
-	return "".join(random.choices(alphabet, k=k))
 
+def gen_ident(k=10, /):
+    """
+    Generate a random identifier / password.
+    """
+    return "".join(random.choices(alphabet, k=k))  # noqa:S311
